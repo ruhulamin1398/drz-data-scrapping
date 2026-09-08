@@ -39,11 +39,11 @@ export async function PATCH(req: NextRequest) {
         phones=COALESCE($5,phones), extra_information=COALESCE($6,extra_information),
         division_id=COALESCE($7,division_id), district_id=COALESCE($8,district_id),
         type_id=COALESCE($9,type_id), drx_id=COALESCE($10,drx_id),
-        fail_reason=$11, updated_at=now() WHERE source_url=$1`,
+        fail_reason=$11, full_content = full_content OR $12, updated_at=now() WHERE source_url=$1`,
       [b.url, b.status, b.name ?? null, b.fullAddress ?? null,
        b.phones ?? null, b.extraInformation ?? null,
        b.divisionId ?? null, b.districtId ?? null, b.typeId ?? null,
-       b.drxId ?? null, b.failReason ?? null]
+       b.drxId ?? null, b.failReason ?? null, b.fullContent === true]
     );
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {
@@ -51,7 +51,9 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
-// POST /api/queue { action: "retry", statuses: [...] } — unchanged
+// POST /api/queue { action: "retry", statuses: [...], toStatus?, fullContent?, group? }
+// Resets matching rows for manual browser retry. toStatus defaults to 'pending';
+// pass 'processing' to claim them synchronously so cron (pending-only) can't steal them.
 export async function POST(req: NextRequest) {
   try {
     const b = await req.json();
@@ -65,12 +67,15 @@ export async function POST(req: NextRequest) {
     } else {
       return NextResponse.json({ error: "unknown action" }, { status: 400 });
     }
+    const processing = b.toStatus === "processing";
     const pool = db();
-    const params: string[] = [...statuses];
+    const params: (string | boolean)[] = [...statuses, b.fullContent === true];
     if (b.group) params.push(b.group);
     const r = await pool.query(
-      `UPDATE facility_queue SET status='pending', fail_reason=NULL, updated_at=now()
-       WHERE status = ANY($1)${b.group ? " AND group_key=$2" : ""}`,
+      `UPDATE facility_queue SET status='${processing ? "processing" : "pending"}',
+        fail_reason=NULL, full_content = full_content OR $2,
+        locked_at=${processing ? "now()" : "NULL"}, updated_at=now()
+       WHERE status = ANY($1)${b.group ? ` AND group_key=$${params.length}` : ""}`,
       params
     );
     return NextResponse.json({ reset: r.rowCount ?? 0 });

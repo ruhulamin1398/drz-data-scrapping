@@ -9,6 +9,7 @@ export async function GET() {
     drxBase: !!process.env.DRX_API_BASE,
     drxToken: !!process.env.DRX_ADMIN_TOKEN,
     databaseUrl: !!process.env.DATABASE_URL,
+    cronSecret: !!process.env.CRON_SECRET,
   };
   let database: { ok: boolean; latencyMs?: number; error?: string } = { ok: false, error: "DATABASE_URL missing" };
   if (env.databaseUrl) {

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { parseExtracted } from "@/lib/parse";
 
 type Group = {
   key: string; division: string; divisionId: number;
@@ -18,26 +19,7 @@ type QRow = {
 };
 
 type DoneStatus = "failed" | "success";
-
-function parseExtracted(text: string) {
-  const get = (key: string) => {
-    const m = text.match(new RegExp(`^${key}\\s*:\\s*(.+)$`, "m"));
-    return (m?.[1] ?? "").trim();
-  };
-  let phones: string[] = [];
-  try {
-    const arr = JSON.parse(get("phones"));
-    if (Array.isArray(arr)) phones = arr.map(String);
-  } catch { /* leave empty */ }
-  return {
-    name: get("name"),
-    fullAddress: get("fullAddress"),
-    phones,
-    extraInformation: get("extraInformation").replace(/^"|"$/g, ""),
-    divisionId: Number(get("divisionId")) || 0,
-    districtId: Number(get("districtId")) || 0,
-  };
-}
+type Settings = { enabled: boolean; concurrency: number; tasks_per_tick: number; heartbeat_at: string | null };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const groupLabel = (g: Group) => `${g.division}${g.district ? ` — ${g.district}` : ""} (${g.items.length})`;
@@ -48,19 +30,27 @@ export default function Home() {
   const [queue, setQueue] = useState<QRow[]>([]);
   const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
   const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
-  const [running, setRunning] = useState(false);
+  const [settings, setSettings] = useState<Settings>({ enabled: false, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
   const [busy, setBusy] = useState(false);
-  const [active, setActive] = useState<string[]>([]); // urls a worker is processing right now
-  const [concurrency, setConcurrency] = useState(3);
+  const [active, setActive] = useState<string[]>([]); // urls the browser is retrying right now
   const stopRef = useRef(false);
 
   const group = groups.find((g) => g.key === groupKey);
   const shown = queue.filter((q) => filter === "all" || q.status === filter);
+  const busyRetry = busy || active.length > 0;
 
   async function loadQueue(gk = groupKey) {
     const r = await fetch(`/api/queue?limit=1000${gk ? `&group=${encodeURIComponent(gk)}` : ""}`);
     const j = await r.json();
     if (!j.error) { setQueue(j.items); setCounts(j.counts); }
+  }
+
+  async function loadSettings() {
+    try {
+      const r = await fetch("/api/settings");
+      const j = await r.json();
+      if (!j.error) setSettings(j);
+    } catch { /* ignore */ }
   }
 
   useEffect(() => {
@@ -74,9 +64,17 @@ export default function Home() {
         await fetch("/api/queue/sync", { method: "POST" }); // everything in queue by default
         loadQueue(key);
       }
+      loadSettings();
     })();
   }, []);
   useEffect(() => { if (groupKey) loadQueue(groupKey); }, [groupKey]);
+
+  // Poll while the server processor is enabled — the page is a monitor, no tab work needed.
+  useEffect(() => {
+    if (!settings.enabled) return;
+    const t = setInterval(() => { loadQueue(); loadSettings(); }, 10000);
+    return () => clearInterval(t);
+  }, [settings.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function patch(url: string, body: object) {
     await fetch("/api/queue", {
@@ -85,9 +83,26 @@ export default function Home() {
     });
   }
 
+  async function saveSettings(patchBody: Partial<Settings>) {
+    const r = await fetch("/api/settings", {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patchBody),
+    });
+    const j = await r.json();
+    if (!j.error) setSettings(j);
+  }
+
+  // Start = enable server processing (cron picks it up within a minute).
+  // Stop = disable; in-flight server items finish, next tick goes quiet.
+  async function setEnabled(enabled: boolean) {
+    if (enabled) stopRef.current = false;
+    else stopRef.current = true; // also halts any browser retry loop
+    await saveSettings({ enabled });
+  }
+
+  // Browser-driven single-item processing (manual retry only — never cron's job).
   async function processOne(q: QRow, full: boolean) {
     setActive((a) => (a.includes(q.source_url) ? a : [...a, q.source_url]));
-    await patch(q.source_url, { status: "processing" });
     try {
       const f = await fetch("/api/fetch", {
         method: "POST", headers: { "Content-Type": "application/json" },
@@ -138,15 +153,23 @@ export default function Home() {
     }
   }
 
-  // Core runner: process the given urls with N parallel workers
-  async function runUrls(urls: string[], full: boolean, gk = groupKey) {
-    if (running || !urls.length) return;
-    const r = await fetch(`/api/queue?limit=1000${gk ? `&group=${encodeURIComponent(gk)}` : ""}`);
+  // Bulk browser retry of this group's failed rows (full content, claimed synchronously
+  // as processing so cron can't steal them).
+  async function retryFailed() {
+    if (busyRetry || !group) return;
+    const urls = queue.filter((q) => q.status === "failed").map((q) => q.source_url);
+    if (!urls.length) return;
+    setBusy(true);
+    await fetch("/api/queue", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "retry", statuses: ["failed"], toStatus: "processing", fullContent: true, group: group.key }),
+    });
+    setBusy(false);
+    await loadQueue();
+    const r = await fetch(`/api/queue?limit=1000&group=${encodeURIComponent(group.key)}`);
     const j = await r.json();
     const rows: QRow[] = (j.items ?? []).filter((it: QRow) => urls.includes(it.source_url));
-    if (!rows.length) return;
-    const workers = Math.min(Math.max(1, Math.floor(concurrency) || 1), 10);
-    setRunning(true);
+    const workers = Math.min(Math.max(1, Math.floor(settings.concurrency) || 1), 10);
     stopRef.current = false;
     let cursor = 0;
     await Promise.all(
@@ -155,41 +178,16 @@ export default function Home() {
           if (stopRef.current) return;
           const i = cursor++;
           if (i >= rows.length) return;
-          await processOne(rows[i], full);
+          await processOne(rows[i], true);
           loadQueue();
           await sleep(800);
         }
       })
     );
-    setRunning(false);
     loadQueue();
   }
 
-  // Step 2: process this group's pending (trimmed, fast)
-  async function start() {
-    if (!group) return;
-    const r = await fetch(`/api/queue?status=pending&group=${encodeURIComponent(group.key)}&limit=1000`);
-    const j = await r.json();
-    await runUrls((j.items ?? []).map((it: QRow) => it.source_url), false, group.key);
-  }
-
-  // Retry by status within this group: reset those rows, re-run with full page content
-  async function retryByStatus(statuses: DoneStatus[]) {
-    if (busy || running || !group) return;
-    const urls = queue.filter((q) => statuses.includes(q.status as DoneStatus)).map((q) => q.source_url);
-    if (!urls.length) return;
-    setBusy(true);
-    await fetch("/api/queue", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "retry", statuses, group: group.key }),
-    });
-    setBusy(false);
-    await runUrls(urls, true, group.key);
-  }
-
-  // Retry a single row with full page content — independent of the global run,
-  // so only this item goes to processing and every other row stays as-is.
-  // Also works on stuck "processing" rows (not actively worked = safe to re-run).
+  // Single-row browser retry (full content), independent of everything else.
   async function retryOne(url: string) {
     if (busy) return;
     const row = queue.find((q) => q.source_url === url);
@@ -198,9 +196,9 @@ export default function Home() {
     if (row.status !== "failed" && row.status !== "success" && row.status !== "processing") return;
     if (active.includes(url)) return;
     setActive((a) => [...a, url]);
-    await patch(url, { status: "pending", failReason: null });
+    await patch(url, { status: "processing", failReason: null, fullContent: true } as object);
     await loadQueue();
-    const r = await fetch("/api/queue?limit=1000");
+    const r = await fetch(`/api/queue?limit=1000${groupKey ? `&group=${encodeURIComponent(groupKey)}` : ""}`);
     const j = await r.json();
     const fresh: QRow | undefined = (j.items ?? []).find((it: QRow) => it.source_url === url);
     if (fresh) await processOne(fresh, true);
@@ -214,17 +212,24 @@ export default function Home() {
     success: "bg-success/15 text-success",
     failed: "bg-danger/15 text-danger",
   };
-  // Retry shows on failed/success, plus stuck processing rows (not actively worked).
-  // Live-processing rows show a spinner instead.
   const showRetry = (q: QRow) =>
     q.status === "failed" || q.status === "success" ||
     (q.status === "processing" && !active.includes(q.source_url));
 
+  const heartbeatAge = settings.heartbeat_at
+    ? Math.max(0, Math.round((Date.now() - new Date(settings.heartbeat_at).getTime()) / 1000))
+    : null;
+
   return (
     <main className="mx-auto max-w-3xl px-6 py-8">
-      <h1 className="text-xl font-bold text-text-primary">Facilities queue</h1>
+      <div className="flex items-center gap-3">
+        <h1 className="text-xl font-bold text-text-primary">Facilities queue</h1>
+        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${settings.enabled ? "bg-success/15 text-success" : "bg-surface-alt text-text-muted"}`}>
+          {settings.enabled ? (heartbeatAge != null && heartbeatAge < 180 ? `● live (${heartbeatAge}s ago)` : "● enabled") : "○ paused"}
+        </span>
+      </div>
       <p className="mt-1 text-sm text-text-secondary">
-        All facilities are queued by default — pick a group, press Start, DRX id stored on success.
+        Start runs the server processor via cron — no open browser needed. Retry stays manual, in this tab.
       </p>
 
       {/* counts */}
@@ -243,31 +248,37 @@ export default function Home() {
         <div className="mt-1.5 flex gap-2">
           <select
             className="flex-1 rounded-xl border border-border bg-surface-alt px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-            value={groupKey} onChange={(e) => setGroupKey(e.target.value)} disabled={running}
+            value={groupKey} onChange={(e) => setGroupKey(e.target.value)}
           >
             {groups.map((g) => <option key={g.key} value={g.key}>{groupLabel(g)}</option>)}
           </select>
-          {!running ? (
-            <button onClick={() => start()} disabled={counts.pending === 0}
-              className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:opacity-40">
-              Start ({counts.pending})
+          {!settings.enabled ? (
+            <button onClick={() => setEnabled(true)}
+              className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark">
+              Start
             </button>
           ) : (
-            <button onClick={() => { stopRef.current = true; }}
+            <button onClick={() => setEnabled(false)}
               className="rounded-xl bg-danger px-5 py-2.5 text-sm font-semibold text-white">Stop</button>
           )}
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
-          <label className="flex items-center gap-1.5 text-text-secondary">
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+          <label className="flex items-center gap-1.5 text-text-secondary" title="Items processed at the same time (server safety)">
             Concurrent
-            <input type="number" min={1} max={10} value={concurrency} disabled={running}
-              onChange={(e) => setConcurrency(Number(e.target.value))}
-              className="w-14 rounded-lg border border-border bg-surface-alt px-2 py-1 text-text-primary outline-none focus:border-primary disabled:opacity-40" />
+            <input type="number" min={1} max={10} value={settings.concurrency}
+              onChange={(e) => saveSettings({ concurrency: Number(e.target.value) })}
+              className="w-14 rounded-lg border border-border bg-surface-alt px-2 py-1 text-text-primary outline-none focus:border-primary" />
           </label>
-          <button onClick={() => loadQueue()} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>
-          <button onClick={() => retryByStatus(["failed"])} disabled={busy || running || counts.failed === 0}
+          <label className="flex items-center gap-1.5 text-text-secondary" title="Max items one cron tick takes on (tops up to this many active)">
+            Per tick
+            <input type="number" min={1} max={50} value={settings.tasks_per_tick}
+              onChange={(e) => saveSettings({ tasks_per_tick: Number(e.target.value) })}
+              className="w-14 rounded-lg border border-border bg-surface-alt px-2 py-1 text-text-primary outline-none focus:border-primary" />
+          </label>
+          <button onClick={() => { loadQueue(); loadSettings(); }} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>
+          <button onClick={retryFailed} disabled={busyRetry || counts.failed === 0}
             className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary disabled:opacity-40"
-            title="Re-runs failed rows with the full page content (no trim)">
+            title="Re-runs this group's failed rows here in the browser with full page content">
             Retry failed ({counts.failed})</button>
         </div>
       </div>
@@ -291,14 +302,15 @@ export default function Home() {
                 {q.name || q.title}
               </span>
               {q.status === "processing" && !showRetry(q) && <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
-              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>              {q.drx_id != null && (
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>
+              {q.drx_id != null && (
                 <span className="rounded-md bg-success/15 px-2 py-1 font-mono text-[11px] font-bold text-success">
                   DRX #{q.drx_id}
                 </span>
               )}
               {showRetry(q) && (
                 <button onClick={() => retryOne(q.source_url)} disabled={busy || active.includes(q.source_url)}
-                  title="Retry this item with the full page content"
+                  title="Retry this item here in the browser with the full page content"
                   className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-text-secondary transition hover:border-primary hover:text-text-primary disabled:opacity-40">
                   {active.includes(q.source_url) && <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />}
                   ↻ Retry
