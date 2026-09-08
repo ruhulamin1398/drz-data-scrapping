@@ -229,7 +229,7 @@ export default function Home() {
         </span>
       </div>
       <p className="mt-1 text-sm text-text-secondary">
-        Start runs the server processor via cron — no open browser needed. Retry stays manual, in this tab.
+        Start runs the server processor via cron — no open browser needed. Concurrency lives in Settings. Retry stays manual, in this tab.
       </p>
 
       {/* counts */}
@@ -262,19 +262,7 @@ export default function Home() {
               className="rounded-xl bg-danger px-5 py-2.5 text-sm font-semibold text-white">Stop</button>
           )}
         </div>
-        <div className="mt-2 flex flex-wrap items-center gap-3 text-xs">
-          <label className="flex items-center gap-1.5 text-text-secondary" title="Items processed at the same time (server safety)">
-            Concurrent
-            <input type="number" min={1} max={10} value={settings.concurrency}
-              onChange={(e) => saveSettings({ concurrency: Number(e.target.value) })}
-              className="w-14 rounded-lg border border-border bg-surface-alt px-2 py-1 text-text-primary outline-none focus:border-primary" />
-          </label>
-          <label className="flex items-center gap-1.5 text-text-secondary" title="Max items one cron tick takes on (tops up to this many active)">
-            Per tick
-            <input type="number" min={1} max={50} value={settings.tasks_per_tick}
-              onChange={(e) => saveSettings({ tasks_per_tick: Number(e.target.value) })}
-              className="w-14 rounded-lg border border-border bg-surface-alt px-2 py-1 text-text-primary outline-none focus:border-primary" />
-          </label>
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <button onClick={() => { loadQueue(); loadSettings(); }} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>
           <button onClick={retryFailed} disabled={busyRetry || counts.failed === 0}
             className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary disabled:opacity-40"

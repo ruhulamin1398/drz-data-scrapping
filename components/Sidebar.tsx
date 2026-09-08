@@ -25,6 +25,16 @@ const NAV = [
       </svg>
     ),
   },
+  {
+    href: "/settings",
+    label: "Settings",
+    desc: "processor config",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-5 w-5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm7.5-3a7.5 7.5 0 0 0-.15-1.5l2-1.55-2-3.46-2.36.95a7.5 7.5 0 0 0-2.6-1.5L14 2h-4l-.39 2.44a7.5 7.5 0 0 0-2.6 1.5l-2.36-.95-2 3.46 2 1.55a7.5 7.5 0 0 0 0 3l-2 1.55 2 3.46 2.36-.95a7.5 7.5 0 0 0 2.6 1.5L10 22h4l.39-2.44a7.5 7.5 0 0 0 2.6-1.5l2.36.95 2-3.46-2-1.55c.1-.5.15-1 .15-1.5Z" />
+      </svg>
+    ),
+  },
 ];
 
 export default function Sidebar() {
