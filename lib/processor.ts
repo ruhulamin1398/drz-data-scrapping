@@ -94,11 +94,31 @@ async function processSingleItem(pool: Pool, q: QRow): Promise<boolean> {
 
 // One cron tick: gate on settings.enabled, top up active rows to tasks_per_tick,
 // work them with `concurrency` parallel workers. Single attempt, terminal states.
+// Every tick (including paused ones) is recorded in cron_runs for history.
 export async function runProcessor(): Promise<TickResult> {
   const pool = db();
-  const s = await getSettings(pool);
-  if (!s || !s.enabled) return { status: "paused", claimed: 0, succeeded: 0, failed: 0, remaining: 0 };
-  await pool.query("UPDATE settings SET heartbeat_at=now() WHERE id=1");
+  const started = Date.now();
+  const run = await pool.query("INSERT INTO cron_runs (status) VALUES ('running') RETURNING id");
+  const runId: number = run.rows[0].id;
+  // Retention: paused ticks every minute add up — keep 7 days.
+  await pool.query("DELETE FROM cron_runs WHERE started_at < now() - INTERVAL '7 days'").catch(() => {});
+
+  async function finish(patch: { status: string; claimed?: number; succeeded?: number; failed?: number; remaining?: number; error?: string }) {
+    await pool.query(
+      `UPDATE cron_runs SET finished_at=now(), duration_ms=$2, status=$3,
+        claimed=$4, succeeded=$5, failed=$6, remaining=$7, error=$8 WHERE id=$1`,
+      [runId, Date.now() - started, patch.status, patch.claimed ?? 0, patch.succeeded ?? 0,
+       patch.failed ?? 0, patch.remaining ?? 0, patch.error ?? null]
+    ).catch(() => {});
+  }
+
+  try {
+    const s = await getSettings(pool);
+    if (!s || !s.enabled) {
+      await finish({ status: "paused" });
+      return { status: "paused", claimed: 0, succeeded: 0, failed: 0, remaining: 0 };
+    }
+    await pool.query("UPDATE settings SET heartbeat_at=now() WHERE id=1");
 
   // Reconcile: rows stuck in processing (dead run, closed tab, old rows without
   // locked_at) go back to pending.
@@ -129,5 +149,12 @@ export async function runProcessor(): Promise<TickResult> {
   }
 
   const remaining = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='pending'")).rows[0].c);
-  return { status: "done", claimed, succeeded, failed, remaining };
+  const result = { status: "done" as const, claimed, succeeded, failed, remaining };
+  await finish(result);
+  return result;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await finish({ status: "error", error: msg.slice(0, 300) });
+    throw err;
+  }
 }

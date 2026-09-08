@@ -35,6 +35,16 @@ const NAV = [
       </svg>
     ),
   },
+  {
+    href: "/history",
+    label: "History",
+    desc: "cron ticks",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-5 w-5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l2.5 2.5M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9Z" />
+      </svg>
+    ),
+  },
 ];
 
 export default function Sidebar() {

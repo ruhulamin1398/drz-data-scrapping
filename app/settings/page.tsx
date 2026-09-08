@@ -86,6 +86,7 @@ export default function SettingsPage() {
       <div className="mt-3 rounded-2xl border border-border bg-surface p-4 text-sm shadow-sm">
         <p className="font-semibold text-text-primary">Cron endpoint</p>
         <p className="mt-1 font-mono text-xs text-text-secondary">POST /api/cron — header <span className="text-text-primary">x-cron-secret</span>, every 1 min via cron-job.org</p>
+        <p className="mt-1 text-xs text-text-secondary">Tick history lives under <span className="font-semibold text-text-primary">History</span> in the sidebar.</p>
       </div>
     </main>
   );
