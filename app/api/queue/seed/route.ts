@@ -2,13 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { inferTypeId } from "@/lib/groups";
 
-// POST { items: [{title, url}], divisionId, districtId? } — step 1: seed all as pending
+// POST { items: [{title, url}], divisionId, districtId?, groupKey } — step 1: seed all as pending
 export async function POST(req: NextRequest) {
   try {
     const b = await req.json();
     const items: { title: string; url: string }[] = b.items ?? [];
     const divisionId = b.divisionId ?? null;
     const districtId = b.districtId ?? null;
+    const groupKey: string | null = b.groupKey ?? null;
     if (!items.length) return NextResponse.json({ error: "items required" }, { status: 400 });
 
     const pool = db();
@@ -16,9 +17,9 @@ export async function POST(req: NextRequest) {
     for (const it of items) {
       if (!it.url) continue;
       const r = await pool.query(
-        `INSERT INTO facility_queue (title, source_url, division_id, district_id, type_id, status)
-         VALUES ($1,$2,$3,$4,$5,'pending') ON CONFLICT (source_url) DO NOTHING`,
-        [it.title || null, it.url, divisionId, districtId, inferTypeId(it.title || "")]
+        `INSERT INTO facility_queue (title, source_url, division_id, district_id, type_id, group_key, status)
+         VALUES ($1,$2,$3,$4,$5,$6,'pending') ON CONFLICT (source_url) DO NOTHING`,
+        [it.title || null, it.url, divisionId, districtId, inferTypeId(it.title || ""), groupKey]
       );
       if ((r.rowCount ?? 0) > 0) added++;
     }

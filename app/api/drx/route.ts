@@ -1,7 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// POST { name, divisionId, districtId, typeId, fullAddress, phones[], extraInformation }
-// Creates the facility on drx-backend, returns its id. Keys from .env.local only.
+// POST { name, divisionId, districtId, typeId, fullAddress, phones[], extraInformation, drxId? }
+// Without drxId: creates the facility on drx-backend. With drxId: updates it in place
+// (used when retrying an already-pushed row, so no duplicate is created).
 export async function POST(req: NextRequest) {
   try {
     const b = await req.json();
@@ -11,14 +12,27 @@ export async function POST(req: NextRequest) {
     if (!b.name || !b.divisionId || !b.districtId || !b.typeId) {
       return NextResponse.json({ error: "name, divisionId, districtId, typeId required" }, { status: 400 });
     }
+    const payload = {
+      name: b.name, divisionId: b.divisionId, districtId: b.districtId, typeId: b.typeId,
+      fullAddress: b.fullAddress || "", phones: b.phones || [],
+      extraInformation: b.extraInformation || "",
+    };
+    if (b.drxId) {
+      const res = await fetch(`${base}/api/v1/facilities/${b.drxId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) {
+        const t = await res.text().catch(() => "");
+        return NextResponse.json({ error: t.slice(0, 300) || `drx patch ${res.status}` }, { status: 502 });
+      }
+      return NextResponse.json({ drxId: b.drxId, updated: true });
+    }
     const res = await fetch(`${base}/api/v1/facilities`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify({
-        name: b.name, divisionId: b.divisionId, districtId: b.districtId, typeId: b.typeId,
-        fullAddress: b.fullAddress || "", phones: b.phones || [],
-        extraInformation: b.extraInformation || "",
-      }),
+      body: JSON.stringify(payload),
     });
     const text = await res.text();
     let json: { success?: boolean; data?: { id?: number }; error?: { message?: string } } = {};

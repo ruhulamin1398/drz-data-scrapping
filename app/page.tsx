@@ -11,10 +11,13 @@ type Group = {
 type QRow = {
   id: number; title: string; source_url: string;
   division_id: number; district_id: number | null; type_id: number;
+  group_key: string | null;
   status: "pending" | "processing" | "success" | "failed";
   name: string | null; full_address: string | null;
   drx_id: number | null; fail_reason: string | null;
 };
+
+type DoneStatus = "failed" | "success";
 
 function parseExtracted(text: string) {
   const get = (key: string) => {
@@ -47,6 +50,7 @@ export default function Home() {
   const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
   const [running, setRunning] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [active, setActive] = useState<string[]>([]); // urls a worker is processing right now
   const [concurrency, setConcurrency] = useState(3);
   const stopRef = useRef(false);
 
@@ -62,13 +66,14 @@ export default function Home() {
     }
   }
 
-  async function loadQueue() {
-    const r = await fetch("/api/queue?limit=1000");
+  async function loadQueue(gk = groupKey) {
+    const r = await fetch(`/api/queue?limit=1000${gk ? `&group=${encodeURIComponent(gk)}` : ""}`);
     const j = await r.json();
     if (!j.error) { setQueue(j.items); setCounts(j.counts); }
   }
 
-  useEffect(() => { loadGroups(); loadQueue(); }, []);
+  useEffect(() => { loadGroups(); }, []);
+  useEffect(() => { if (groupKey) loadQueue(groupKey); }, [groupKey]);
 
   // Step 1: seed whole group as pending
   async function addToQueue() {
@@ -76,7 +81,7 @@ export default function Home() {
     setBusy(true);
     await fetch("/api/queue/seed", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: group.items, divisionId: group.divisionId, districtId: group.districtId ?? null }),
+      body: JSON.stringify({ items: group.items, divisionId: group.divisionId, districtId: group.districtId ?? null, groupKey: group.key }),
     });
     setBusy(false);
     loadQueue();
@@ -89,74 +94,77 @@ export default function Home() {
     });
   }
 
-  // Step 2: process pending one by one → drx → success + drx id, or failed
-  async function start() {
-    if (running) return;
-    const r = await fetch("/api/queue?status=pending&limit=1000");
+  async function processOne(q: QRow, full: boolean) {
+    setActive((a) => (a.includes(q.source_url) ? a : [...a, q.source_url]));
+    await patch(q.source_url, { status: "processing" });
+    try {
+      const f = await fetch("/api/fetch", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: q.source_url, full }),
+      });
+      const fj = await f.json();
+      if (!f.ok) throw new Error(fj.error || `fetch ${f.status}`);
+
+      const e = await fetch("/api/extract", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ trimmed: fj.trimmed, divisionId: q.division_id }),
+      });
+      const ej = await e.json();
+      if (!e.ok) throw new Error(ej.error || `extract ${e.status}`);
+
+      const p = parseExtracted(ej.extracted || "");
+      if (!p.fullAddress) {
+        await patch(q.source_url, { status: "failed", name: p.name || null, failReason: "fullAddress empty from model" });
+        return;
+      }
+      const divisionId = p.divisionId || q.division_id;
+      const districtId = p.districtId || q.district_id;
+      if (!districtId) {
+        await patch(q.source_url, { status: "failed", name: p.name, fullAddress: p.fullAddress, failReason: "districtId unknown" });
+        return;
+      }
+      const d = await fetch("/api/drx", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: p.name, divisionId, districtId, typeId: q.type_id,
+          fullAddress: p.fullAddress, phones: p.phones, extraInformation: p.extraInformation,
+          drxId: q.drx_id ?? undefined, // retry of a pushed row updates DRX in place
+        }),
+      });
+      const dj = await d.json();
+      if (!d.ok) throw new Error(dj.error || `drx ${d.status}`);
+
+      await patch(q.source_url, {
+        status: "success", name: p.name, fullAddress: p.fullAddress,
+        phones: p.phones, extraInformation: p.extraInformation,
+        divisionId, districtId, drxId: dj.drxId, failReason: null,
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await patch(q.source_url, { status: "failed", failReason: msg.slice(0, 300) });
+    } finally {
+      setActive((a) => a.filter((u) => u !== q.source_url));
+    }
+  }
+
+  // Core runner: process the given urls with N parallel workers
+  async function runUrls(urls: string[], full: boolean, gk = groupKey) {
+    if (running || !urls.length) return;
+    const r = await fetch(`/api/queue?limit=1000${gk ? `&group=${encodeURIComponent(gk)}` : ""}`);
     const j = await r.json();
-    const pending: QRow[] = j.items ?? [];
-    if (!pending.length) return;
+    const rows: QRow[] = (j.items ?? []).filter((it: QRow) => urls.includes(it.source_url));
+    if (!rows.length) return;
     const workers = Math.min(Math.max(1, Math.floor(concurrency) || 1), 10);
     setRunning(true);
     stopRef.current = false;
-
-    async function processOne(q: QRow) {
-      await patch(q.source_url, { status: "processing" });
-      try {
-        const f = await fetch("/api/fetch", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ url: q.source_url }),
-        });
-        const fj = await f.json();
-        if (!f.ok) throw new Error(fj.error || `fetch ${f.status}`);
-
-        const e = await fetch("/api/extract", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ trimmed: fj.trimmed, divisionId: q.division_id }),
-        });
-        const ej = await e.json();
-        if (!e.ok) throw new Error(ej.error || `extract ${e.status}`);
-
-        const p = parseExtracted(ej.extracted || "");
-        if (!p.fullAddress) {
-          await patch(q.source_url, { status: "failed", name: p.name || null, failReason: "fullAddress empty from model" });
-          return;
-        }
-        const divisionId = p.divisionId || q.division_id;
-        const districtId = p.districtId || q.district_id;
-        if (!districtId) {
-          await patch(q.source_url, { status: "failed", name: p.name, fullAddress: p.fullAddress, failReason: "districtId unknown" });
-          return;
-        }
-        const d = await fetch("/api/drx", {
-          method: "POST", headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            name: p.name, divisionId, districtId, typeId: q.type_id,
-            fullAddress: p.fullAddress, phones: p.phones, extraInformation: p.extraInformation,
-          }),
-        });
-        const dj = await d.json();
-        if (!d.ok) throw new Error(dj.error || `drx ${d.status}`);
-
-        await patch(q.source_url, {
-          status: "success", name: p.name, fullAddress: p.fullAddress,
-          phones: p.phones, extraInformation: p.extraInformation,
-          divisionId, districtId, drxId: dj.drxId, failReason: null,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        await patch(q.source_url, { status: "failed", failReason: msg.slice(0, 300) });
-      }
-    }
-
     let cursor = 0;
     await Promise.all(
       Array.from({ length: workers }, async () => {
         while (true) {
           if (stopRef.current) return;
           const i = cursor++;
-          if (i >= pending.length) return;
-          await processOne(pending[i]);
+          if (i >= rows.length) return;
+          await processOne(rows[i], full);
           loadQueue();
           await sleep(800);
         }
@@ -166,11 +174,46 @@ export default function Home() {
     loadQueue();
   }
 
-  async function retryFailed() {
-    if (busy) return;
+  // Step 2: process this group's pending (trimmed, fast)
+  async function start() {
+    if (!group) return;
+    const r = await fetch(`/api/queue?status=pending&group=${encodeURIComponent(group.key)}&limit=1000`);
+    const j = await r.json();
+    await runUrls((j.items ?? []).map((it: QRow) => it.source_url), false, group.key);
+  }
+
+  // Retry by status within this group: reset those rows, re-run with full page content
+  async function retryByStatus(statuses: DoneStatus[]) {
+    if (busy || running || !group) return;
+    const urls = queue.filter((q) => statuses.includes(q.status as DoneStatus)).map((q) => q.source_url);
+    if (!urls.length) return;
     setBusy(true);
-    await fetch("/api/queue", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "retry-failed" }) });
+    await fetch("/api/queue", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "retry", statuses, group: group.key }),
+    });
     setBusy(false);
+    await runUrls(urls, true, group.key);
+  }
+
+  // Retry a single row with full page content — independent of the global run,
+  // so only this item goes to processing and every other row stays as-is.
+  // Also works on stuck "processing" rows (not actively worked = safe to re-run).
+  async function retryOne(url: string) {
+    if (busy) return;
+    const row = queue.find((q) => q.source_url === url);
+    if (!row) return;
+    if (row.status === "processing" && active.includes(url)) return; // genuinely being worked
+    if (row.status !== "failed" && row.status !== "success" && row.status !== "processing") return;
+    if (active.includes(url)) return;
+    setActive((a) => [...a, url]);
+    await patch(url, { status: "pending", failReason: null });
+    await loadQueue();
+    const r = await fetch("/api/queue?limit=1000");
+    const j = await r.json();
+    const fresh: QRow | undefined = (j.items ?? []).find((it: QRow) => it.source_url === url);
+    if (fresh) await processOne(fresh, true);
+    setActive((a) => a.filter((u) => u !== url));
     loadQueue();
   }
 
@@ -180,12 +223,17 @@ export default function Home() {
     success: "bg-success/15 text-success",
     failed: "bg-danger/15 text-danger",
   };
+  // Retry shows on failed/success, plus stuck processing rows (not actively worked).
+  // Live-processing rows show a spinner instead.
+  const showRetry = (q: QRow) =>
+    q.status === "failed" || q.status === "success" ||
+    (q.status === "processing" && !active.includes(q.source_url));
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-xl font-bold text-text-primary">Facilities queue</h1>
       <p className="mt-1 text-sm text-text-secondary">
-        Step 1: add a group as pending. Step 2: process one by one → DRX id stored on success.
+        Step 1: add a group as pending. Step 2: process → DRX id stored on success. Retry uses full page.
       </p>
 
       {/* counts */}
@@ -213,7 +261,7 @@ export default function Home() {
             Add to queue
           </button>
           {!running ? (
-            <button onClick={start} disabled={counts.pending === 0}
+            <button onClick={() => start()} disabled={counts.pending === 0}
               className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:opacity-40">
               Start ({counts.pending})
             </button>
@@ -222,18 +270,18 @@ export default function Home() {
               className="rounded-xl bg-danger px-5 py-2.5 text-sm font-semibold text-white">Stop</button>
           )}
         </div>
-        <div className="mt-2 flex items-center gap-2 text-xs">
+        <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <label className="flex items-center gap-1.5 text-text-secondary">
             Concurrent
             <input type="number" min={1} max={10} value={concurrency} disabled={running}
               onChange={(e) => setConcurrency(Number(e.target.value))}
               className="w-14 rounded-lg border border-border bg-surface-alt px-2 py-1 text-text-primary outline-none focus:border-primary disabled:opacity-40" />
           </label>
-          <button onClick={loadQueue} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>
-          <button onClick={retryFailed} disabled={busy || counts.failed === 0}
-            className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary disabled:opacity-40">
-            Retry failed ({counts.failed})
-          </button>
+          <button onClick={() => loadQueue()} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>
+          <button onClick={() => retryByStatus(["failed"])} disabled={busy || running || counts.failed === 0}
+            className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary disabled:opacity-40"
+            title="Re-runs failed rows with the full page content (no trim)">
+            Retry failed ({counts.failed})</button>
         </div>
       </div>
 
@@ -255,12 +303,19 @@ export default function Home() {
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">
                 {q.name || q.title}
               </span>
-              {q.status === "processing" && <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
-              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>
-              {q.drx_id != null && (
+              {q.status === "processing" && !showRetry(q) && <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
+              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>              {q.drx_id != null && (
                 <span className="rounded-md bg-success/15 px-2 py-1 font-mono text-[11px] font-bold text-success">
                   DRX #{q.drx_id}
                 </span>
+              )}
+              {showRetry(q) && (
+                <button onClick={() => retryOne(q.source_url)} disabled={busy || active.includes(q.source_url)}
+                  title="Retry this item with the full page content"
+                  className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-text-secondary transition hover:border-primary hover:text-text-primary disabled:opacity-40">
+                  {active.includes(q.source_url) && <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />}
+                  ↻ Retry
+                </button>
               )}
             </div>
             {q.status === "failed" && q.fail_reason && (
