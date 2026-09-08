@@ -58,15 +58,22 @@ export type DrxFacility = {
   fullAddress: string; phones: string[]; extraInformation: string; drxId?: number;
 };
 
+function slugify(s: string): string {
+  return s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "facility";
+}
+
 // Step 3: create on drx-backend, or PATCH in place when drxId is given (no duplicates).
 export async function pushDrx(f: DrxFacility): Promise<{ drxId: number; updated?: boolean }> {
   const base = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").replace(/\/$/, "");
   const token = process.env.DRX_ADMIN_TOKEN || "";
   if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
   if (!f.name || !f.divisionId || !f.districtId || !f.typeId) throw new Error("name, divisionId, districtId, typeId required");
+  const slug = `${slugify(f.name)}-${f.districtId}`;
   const payload = {
     name: f.name, divisionId: f.divisionId, districtId: f.districtId, typeId: f.typeId,
-    fullAddress: f.fullAddress || "", phones: f.phones || [], extraInformation: f.extraInformation || "",
+    slug, code: `FAC-${f.divisionId}-${slug}`,
+    fullAddress: f.fullAddress || "", phones: f.phones || [],
+    extraInformation: f.extraInformation || "",
   };
   if (f.drxId) return updateDrx(base, token, f.drxId, payload);
   const res = await fetch(`${base}/api/v1/facilities`, {
@@ -82,7 +89,7 @@ export async function pushDrx(f: DrxFacility): Promise<{ drxId: number; updated?
     // Slug collision (retry of a row whose first POST succeeded but wasn't recorded,
     // or a same-named facility): find the existing record and update it in place.
     if (/already exists/i.test(msg)) {
-      const found = await findDrxByName(base, token, f.name);
+      const found = await findDrxByName(base, token, f.name, f.districtId);
       if (found) return updateDrx(base, token, found, payload);
     }
     throw new Error(msg);
@@ -90,16 +97,17 @@ export async function pushDrx(f: DrxFacility): Promise<{ drxId: number; updated?
   return { drxId: json.data.id };
 }
 
-async function findDrxByName(base: string, token: string, name: string): Promise<number | null> {
-  const res = await fetch(`${base}/api/v1/facilities?search=${encodeURIComponent(name)}&fields=id,name&limit=20`, {
+async function findDrxByName(base: string, token: string, name: string, districtId: number): Promise<number | null> {
+  const res = await fetch(`${base}/api/v1/facilities?search=${encodeURIComponent(name)}&fields=id,name,districtId&limit=20`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) return null;
   const json = await res.json().catch(() => null);
-  const items: { id: number; name: string }[] = json?.data?.items ?? [];
+  const items: { id: number; name: string; districtId?: number }[] = json?.data?.items ?? [];
   const target = name.trim().toLowerCase();
-  return items.find((it) => it.name?.trim().toLowerCase() === target)?.id
-    ?? (items.length === 1 ? items[0].id : null);
+  const sameName = items.filter((it) => it.name?.trim().toLowerCase() === target);
+  return sameName.find((it) => it.districtId === districtId)?.id
+    ?? (sameName.length === 1 ? sameName[0].id : null);
 }
 
 async function updateDrx(base: string, token: string, id: number, payload: object): Promise<{ drxId: number; updated: boolean }> {
