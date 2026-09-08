@@ -1,4 +1,5 @@
 import { Pool } from "pg";
+import { after } from "next/server";
 import { db } from "./db";
 import { fetchSource, extractInfo, pushDrx } from "./scrape";
 import { parseExtracted } from "./parse";
@@ -13,16 +14,23 @@ export type QRow = {
 };
 
 export type TickResult = {
-  status: "paused" | "done";
-  claimed: number; succeeded: number; failed: number; remaining: number;
+  status: "paused" | "started" | "already-running";
+  toppedUp: number; active: number; remaining: number;
 };
 
-const TICK_BUDGET_MS = 50000;
-const STALE_MS = 10 * 60 * 1000;
+const LOOP_BUDGET_MS = 45000;
+const OWNER_STALE_MS = 2 * 60 * 1000;
+
+// Per-instance fast path: on Render (persistent process) this stays true while
+// the loop works; on Vercel each invocation may be a fresh instance (DB owns truth).
+let loopRunning = false;
 
 async function getSettings(pool: Pool) {
   const r = await pool.query("SELECT * FROM settings WHERE id=1");
-  return r.rows[0] as { enabled: boolean; concurrency: number; tasks_per_tick: number; heartbeat_at: string | null } | undefined;
+  return r.rows[0] as {
+    enabled: boolean; concurrency: number; tasks_per_tick: number;
+    worker_active: boolean; worker_heartbeat: string | null;
+  } | undefined;
 }
 
 // Atomically claim up to n pending rows (SKIP LOCKED = overlapping ticks never collide).
@@ -92,69 +100,103 @@ async function processSingleItem(pool: Pool, q: QRow): Promise<boolean> {
   }
 }
 
-// One cron tick: gate on settings.enabled, top up active rows to tasks_per_tick,
-// work them with `concurrency` parallel workers. Single attempt, terminal states.
-// Every tick (including paused ones) is recorded in cron_runs for history.
+// The background worker: eats server-claimed rows (locked_at NOT NULL — browser
+// retries own theirs) until none remain, disabled, or the time budget ends.
+// Then it stops and releases ownership; the next tick starts it again if needed.
+async function workerLoop(concurrency: number): Promise<{ succeeded: number; failed: number }> {
+  const pool = db();
+  let succeeded = 0, failed = 0;
+  const deadline = Date.now() + LOOP_BUDGET_MS;
+  const run = await pool.query("INSERT INTO cron_runs (status) VALUES ('running') RETURNING id").catch(() => null);
+  const runId: number | null = run?.rows[0]?.id ?? null;
+  try {
+    while (Date.now() < deadline) {
+      const s = await getSettings(pool);
+      if (!s || !s.enabled) break;
+      await pool.query("UPDATE settings SET worker_heartbeat=now() WHERE id=1").catch(() => {});
+      const batch = await pool.query(
+        `SELECT * FROM facility_queue
+         WHERE status='processing' AND locked_at IS NOT NULL
+         ORDER BY id LIMIT $1`,
+        [concurrency]
+      );
+      const rows = batch.rows as QRow[];
+      if (!rows.length) break;
+      const results = await Promise.all(rows.map((q) => processSingleItem(pool, q)));
+      const ok = results.filter(Boolean).length;
+      succeeded += ok;
+      failed += results.length - ok;
+    }
+    if (runId !== null) {
+      await pool.query(
+        `UPDATE cron_runs SET finished_at=now(), duration_ms=$2, status='done',
+          succeeded=$3, failed=$4 WHERE id=$1`,
+        [runId, Date.now() - (deadline - LOOP_BUDGET_MS), succeeded, failed]
+      ).catch(() => {});
+    }
+  } catch (err) {
+    if (runId !== null) {
+      const msg = err instanceof Error ? err.message : String(err);
+      await pool.query("UPDATE cron_runs SET finished_at=now(), status='error', error=$2 WHERE id=$1",
+        [runId, msg.slice(0, 300)]).catch(() => {});
+    }
+  } finally {
+    await pool.query("UPDATE settings SET worker_active=false, updated_at=now() WHERE id=1").catch(() => {});
+    loopRunning = false;
+  }
+  return { succeeded, failed };
+}
+
+function logTick(pool: Pool, status: string, toppedUp: number) {
+  return pool.query(
+    `INSERT INTO cron_runs (status, finished_at, duration_ms, claimed) VALUES ($1, now(), 0, $2)`,
+    [status, toppedUp]
+  ).catch(() => {});
+}
+
+// One cron tick: reconcile, top pending up to (tasks_per_tick − active) into
+// processing, ensure the worker loop is going, and RETURN IMMEDIATELY.
+// Next tick while the loop works: only tops up, never restarts it.
 export async function runProcessor(): Promise<TickResult> {
   const pool = db();
-  const started = Date.now();
-  const run = await pool.query("INSERT INTO cron_runs (status) VALUES ('running') RETURNING id");
-  const runId: number = run.rows[0].id;
-  // Retention: paused ticks every minute add up — keep 7 days.
-  await pool.query("DELETE FROM cron_runs WHERE started_at < now() - INTERVAL '7 days'").catch(() => {});
-
-  async function finish(patch: { status: string; claimed?: number; succeeded?: number; failed?: number; remaining?: number; error?: string }) {
-    await pool.query(
-      `UPDATE cron_runs SET finished_at=now(), duration_ms=$2, status=$3,
-        claimed=$4, succeeded=$5, failed=$6, remaining=$7, error=$8 WHERE id=$1`,
-      [runId, Date.now() - started, patch.status, patch.claimed ?? 0, patch.succeeded ?? 0,
-       patch.failed ?? 0, patch.remaining ?? 0, patch.error ?? null]
-    ).catch(() => {});
+  const s = await getSettings(pool);
+  if (!s || !s.enabled) {
+    await logTick(pool, "paused", 0);
+    return { status: "paused", toppedUp: 0, active: 0, remaining: 0 };
   }
-
-  try {
-    const s = await getSettings(pool);
-    if (!s || !s.enabled) {
-      await finish({ status: "paused" });
-      return { status: "paused", claimed: 0, succeeded: 0, failed: 0, remaining: 0 };
-    }
-    await pool.query("UPDATE settings SET heartbeat_at=now() WHERE id=1");
+  await pool.query("UPDATE settings SET heartbeat_at=now() WHERE id=1").catch(() => {});
 
   // Reconcile: rows stuck in processing (dead run, closed tab, old rows without
-  // locked_at) go back to pending.
+  // locked_at) go back to pending. Browser-owned rows (locked_at NULL) only when stale.
   await pool.query(
     `UPDATE facility_queue SET status='pending', locked_at=NULL, updated_at=now()
-     WHERE status='processing' AND (locked_at IS NULL OR locked_at < now() - INTERVAL '10 minutes')`
-  );
+     WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
+        OR locked_at < now() - INTERVAL '10 minutes')`
+  ).catch(() => {});
 
   const concurrency = Math.min(Math.max(1, s.concurrency || 1), 10);
   const quota = Math.min(Math.max(1, s.tasks_per_tick || 1), 50);
-  // Top-up: this tick owns up to (quota − already active) rows, then exits.
   const active0 = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='processing'")).rows[0].c);
-  let toClaim = Math.max(0, quota - active0);
-  let claimed = 0, succeeded = 0, failed = 0;
-  const deadline = Date.now() + TICK_BUDGET_MS;
-
-  while (toClaim > 0 && Date.now() < deadline) {
-    const cur = await getSettings(pool);
-    if (!cur || !cur.enabled) break; // Stop takes effect within seconds
-    const rows = await claim(pool, Math.min(toClaim, concurrency));
-    if (!rows.length) break;
-    toClaim -= rows.length;
-    claimed += rows.length;
-    const results = await Promise.all(rows.map((q) => processSingleItem(pool, q)));
-    const ok = results.filter(Boolean).length;
-    succeeded += ok;
-    failed += results.length - ok;
-  }
-
+  const need = Math.max(0, quota - active0);
+  const toppedUp = need > 0 ? (await claim(pool, need)).length : 0;
   const remaining = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='pending'")).rows[0].c);
-  const result = { status: "done" as const, claimed, succeeded, failed, remaining };
-  await finish(result);
-  return result;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    await finish({ status: "error", error: msg.slice(0, 300) });
-    throw err;
+
+  if (loopRunning) {
+    await logTick(pool, "already-running", toppedUp);
+    return { status: "already-running", toppedUp, active: active0 + toppedUp, remaining };
   }
+  // Atomic cross-instance ownership: only one loop anywhere.
+  const own = await pool.query(
+    `UPDATE settings SET worker_active=true, worker_heartbeat=now(), updated_at=now() WHERE id=1
+     AND (worker_active=false OR worker_heartbeat IS NULL OR worker_heartbeat < now() - INTERVAL '2 minutes')
+     RETURNING id`
+  ).catch(() => null);
+  if (!own || !own.rows.length) {
+    await logTick(pool, "already-running", toppedUp);
+    return { status: "already-running", toppedUp, active: active0 + toppedUp, remaining };
+  }
+  loopRunning = true;
+  after(() => workerLoop(concurrency));
+  await logTick(pool, "started", toppedUp);
+  return { status: "started", toppedUp, active: active0 + toppedUp, remaining };
 }

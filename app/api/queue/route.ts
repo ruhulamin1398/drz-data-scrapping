@@ -33,13 +33,17 @@ export async function PATCH(req: NextRequest) {
     const b = await req.json();
     if (!b.url || !b.status) return NextResponse.json({ error: "url + status required" }, { status: 400 });
     const pool = db();
+    // Browser-driven rows stay unlocked (locked_at=NULL) so only the server
+    // claim path — which always stamps locked_at=now() — feeds the worker loop.
     await pool.query(
       `UPDATE facility_queue SET status=$2,
         name=COALESCE($3,name), full_address=COALESCE($4,full_address),
         phones=COALESCE($5,phones), extra_information=COALESCE($6,extra_information),
         division_id=COALESCE($7,division_id), district_id=COALESCE($8,district_id),
         type_id=COALESCE($9,type_id), drx_id=COALESCE($10,drx_id),
-        fail_reason=$11, full_content = full_content OR $12, updated_at=now() WHERE source_url=$1`,
+        fail_reason=$11, full_content = full_content OR $12,
+        locked_at = CASE WHEN $2='processing' THEN NULL ELSE locked_at END,
+        updated_at=now() WHERE source_url=$1`,
       [b.url, b.status, b.name ?? null, b.fullAddress ?? null,
        b.phones ?? null, b.extraInformation ?? null,
        b.divisionId ?? null, b.districtId ?? null, b.typeId ?? null,

@@ -8,7 +8,7 @@ type Run = {
 };
 
 const PER = 15;
-const FILTERS = ["all", "done", "paused", "running", "error"] as const;
+const FILTERS = ["all", "done", "started", "already-running", "paused", "running", "error"] as const;
 
 export default function HistoryPage() {
   const [runs, setRuns] = useState<Run[]>([]);
@@ -32,8 +32,10 @@ export default function HistoryPage() {
 
   const pill = (s: string) =>
     s === "done" ? "bg-success/15 text-success"
+    : s === "started" ? "bg-primary/15 text-primary-dark"
     : s === "paused" ? "bg-surface-alt text-text-muted"
     : s === "running" ? "bg-primary/15 text-primary-dark"
+    : s === "already-running" ? "bg-warning/15 text-warning"
     : "bg-danger/15 text-danger";
 
   return (

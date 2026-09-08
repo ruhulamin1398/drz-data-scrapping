@@ -9,7 +9,7 @@ export async function GET(req: NextRequest) {
     const status = req.nextUrl.searchParams.get("status");
     const vals: (string | number)[] = [];
     let where = "";
-    if (status && ["done", "paused", "running", "error"].includes(status)) {
+    if (status && ["done", "started", "already-running", "paused", "running", "error"].includes(status)) {
       vals.push(status);
       where = `WHERE status=$${vals.length}`;
     }
