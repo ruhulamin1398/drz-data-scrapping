@@ -31,7 +31,7 @@ export default function Home() {
   const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
   const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
   const [page, setPage] = useState(1);
-  const [perPage, setPerPage] = useState(20);
+  const [perPage, setPerPage] = useState<number | "all">(20);
   const [settings, setSettings] = useState<Settings>({ enabled: false, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState<string[]>([]); // urls the browser is retrying right now
@@ -42,14 +42,18 @@ export default function Home() {
   const tabCount = filter === "all"
     ? counts.pending + counts.processing + counts.success + counts.failed
     : counts[filter];
-  const totalPages = Math.max(1, Math.ceil(tabCount / perPage));
+  const totalPages = perPage === "all" ? 1 : Math.max(1, Math.ceil(tabCount / perPage));
   const busyRetry = busy || active.length > 0;
 
   const scopeParam = (gk = groupKey) => (gk && gk !== "all" ? `&group=${encodeURIComponent(gk)}` : "");
 
   async function loadQueue(gk = groupKey, f = filter, p = page, per = perPage) {
-    const statusParam = f === "all" ? "" : `&status=${f}`;
-    const r = await fetch(`/api/queue?limit=${per}&offset=${(p - 1) * per}${statusParam}${scopeParam(gk)}`);
+    const q = new URLSearchParams();
+    if (per === "all") q.set("limit", "all");
+    else { q.set("limit", String(per)); q.set("offset", String((p - 1) * per)); }
+    if (f !== "all") q.set("status", f);
+    if (gk && gk !== "all") q.set("group", gk);
+    const r = await fetch(`/api/queue?${q.toString()}`);
     const j = await r.json();
     if (!j.error) { setQueue(j.items); setCounts(j.counts); }
   }
@@ -340,16 +344,25 @@ export default function Home() {
 
       {/* pagination */}
       <div className="mt-4 flex items-center justify-center gap-2 text-sm">
-        <button onClick={() => { const p = Math.max(1, page - 1); setPage(p); loadQueue(groupKey, filter, p, perPage); }}
-          disabled={page <= 1}
-          className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text-primary disabled:opacity-40">← Prev</button>
-        <span className="text-xs text-text-secondary">Page {page} of {totalPages}</span>
-        <button onClick={() => { const p = Math.min(totalPages, page + 1); setPage(p); loadQueue(groupKey, filter, p, perPage); }}
-          disabled={page >= totalPages}
-          className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text-primary disabled:opacity-40">Next →</button>
-        <select value={perPage} onChange={(e) => { const n = Number(e.target.value); setPerPage(n); setPage(1); loadQueue(groupKey, filter, 1, n); }}
+        {perPage !== "all" && (
+          <>
+            <button onClick={() => { const p = Math.max(1, page - 1); setPage(p); loadQueue(groupKey, filter, p, perPage); }}
+              disabled={page <= 1}
+              className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text-primary disabled:opacity-40">← Prev</button>
+            <span className="text-xs text-text-secondary">Page {page} of {totalPages}</span>
+            <button onClick={() => { const p = Math.min(totalPages, page + 1); setPage(p); loadQueue(groupKey, filter, p, perPage); }}
+              disabled={page >= totalPages}
+              className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text-primary disabled:opacity-40">Next →</button>
+          </>
+        )}
+        {perPage === "all" && <span className="text-xs text-text-secondary">{queue.length} rows</span>}
+        <select value={String(perPage)} onChange={(e) => {
+            const v = e.target.value === "all" ? "all" as const : Number(e.target.value);
+            setPerPage(v); setPage(1); loadQueue(groupKey, filter, 1, v);
+          }}
           className="rounded-lg border border-border bg-surface px-2 py-1.5 text-xs text-text-primary outline-none focus:border-primary">
           {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n} / page</option>)}
+          <option value="all">All</option>
         </select>
       </div>
     </main>

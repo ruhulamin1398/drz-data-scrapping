@@ -1,11 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
-// GET /api/queue?status=..&group=..&limit=..&offset=.. — page of rows + unfiltered counts
+// GET /api/queue?status=..&group=..&limit=..&offset=.. — page of rows + unfiltered counts.
+// limit=all returns everything (no LIMIT/OFFSET).
 export async function GET(req: NextRequest) {
   try {
     const status = req.nextUrl.searchParams.get("status");
     const group = req.nextUrl.searchParams.get("group");
+    const all = req.nextUrl.searchParams.get("limit") === "all";
     const limit = Math.min(Number(req.nextUrl.searchParams.get("limit") ?? 500), 1000);
     const offset = Math.max(0, Number(req.nextUrl.searchParams.get("offset") ?? 0) || 0);
     const pool = db();
@@ -14,8 +16,12 @@ export async function GET(req: NextRequest) {
     if (status) { vals.push(status); conds.push(`status=$${vals.length}`); }
     if (group) { vals.push(group); conds.push(`group_key=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-    vals.push(limit, offset);
-    const rows = await pool.query(`SELECT * FROM facility_queue ${where} ORDER BY id LIMIT $${vals.length - 1} OFFSET $${vals.length}`, vals);
+    let sql = `SELECT * FROM facility_queue ${where} ORDER BY id`;
+    if (!all) {
+      vals.push(limit, offset);
+      sql += ` LIMIT $${vals.length - 1} OFFSET $${vals.length}`;
+    }
+    const rows = await pool.query(sql, vals);
     const cvals: string[] = [];
     const cwhere = group ? `WHERE group_key=$1` : "";
     if (group) cvals.push(group);
