@@ -57,35 +57,26 @@ export default function Home() {
   const group = groups.find((g) => g.key === groupKey);
   const shown = queue.filter((q) => filter === "all" || q.status === filter);
 
-  async function loadGroups() {
-    const r = await fetch("/api/groups");
-    const j = await r.json();
-    if (j.groups?.length) {
-      setGroups(j.groups);
-      setGroupKey((k) => k || j.groups.find((g: Group) => g.divisionId === 41)?.key || j.groups[0].key);
-    }
-  }
-
   async function loadQueue(gk = groupKey) {
     const r = await fetch(`/api/queue?limit=1000${gk ? `&group=${encodeURIComponent(gk)}` : ""}`);
     const j = await r.json();
     if (!j.error) { setQueue(j.items); setCounts(j.counts); }
   }
 
-  useEffect(() => { loadGroups(); }, []);
+  useEffect(() => {
+    (async () => {
+      const r = await fetch("/api/groups");
+      const j = await r.json();
+      if (j.groups?.length) {
+        setGroups(j.groups);
+        const key = j.groups.find((g: Group) => g.divisionId === 41)?.key || j.groups[0].key;
+        setGroupKey(key);
+        await fetch("/api/queue/sync", { method: "POST" }); // everything in queue by default
+        loadQueue(key);
+      }
+    })();
+  }, []);
   useEffect(() => { if (groupKey) loadQueue(groupKey); }, [groupKey]);
-
-  // Step 1: seed whole group as pending
-  async function addToQueue() {
-    if (!group || busy) return;
-    setBusy(true);
-    await fetch("/api/queue/seed", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ items: group.items, divisionId: group.divisionId, districtId: group.districtId ?? null, groupKey: group.key }),
-    });
-    setBusy(false);
-    loadQueue();
-  }
 
   async function patch(url: string, body: object) {
     await fetch("/api/queue", {
@@ -233,7 +224,7 @@ export default function Home() {
     <main className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-xl font-bold text-text-primary">Facilities queue</h1>
       <p className="mt-1 text-sm text-text-secondary">
-        Step 1: add a group as pending. Step 2: process → DRX id stored on success. Retry uses full page.
+        All facilities are queued by default — pick a group, press Start, DRX id stored on success.
       </p>
 
       {/* counts */}
@@ -256,10 +247,6 @@ export default function Home() {
           >
             {groups.map((g) => <option key={g.key} value={g.key}>{groupLabel(g)}</option>)}
           </select>
-          <button onClick={addToQueue} disabled={!group || busy || running}
-            className="rounded-xl border border-border px-4 py-2.5 text-sm font-medium text-text-primary transition hover:border-primary disabled:opacity-40">
-            Add to queue
-          </button>
           {!running ? (
             <button onClick={() => start()} disabled={counts.pending === 0}
               className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:opacity-40">
@@ -328,7 +315,7 @@ export default function Home() {
         ))}
         {shown.length === 0 && (
           <p className="rounded-2xl border border-border bg-surface p-6 text-center text-sm text-text-secondary">
-            Queue is empty — pick a group and Add to queue.
+            No facilities in this group yet.
           </p>
         )}
       </div>
