@@ -43,13 +43,18 @@ export function parseFacilitiesMd(text: string): Group[] {
   return groups.filter((g) => g.items.length > 0);
 }
 
-// Best-effort facility type from title (doctor_zone catalog):
-// 1 Hospital, 2 Diagnostic Center, 3 Medical College Hospital,
-// 4 Specialized Hospital, 5 Diagnostic & Consultation Center
+// Best-effort facility type from title (drz backend catalog):
+// 40 Medical College Hospital, 54 Private Hospital / Clinic,
+// 66 Specialized Hospital, 14 Consultancy & Diagnostic Center
 export function inferTypeId(title: string): number {
   const t = title.toLowerCase();
-  if (t.includes("medical college")) return 3;
-  if (t.includes("specialized") || t.includes("specialised")) return 4;
-  if (t.includes("diagnostic") || t.includes("consultation") || t.includes("clinic") || /\blab\b/.test(t)) return 2;
-  return 1;
+  if (t.includes("medical college") || t.includes("medical university")) return 40;
+  if (
+    t.includes("specialized") || t.includes("specialised") || t.includes("eye") ||
+    t.includes("cancer") || t.includes("heart") || t.includes("cardiac") ||
+    t.includes("kidney") || t.includes("neuro") || t.includes("orthopedic") ||
+    t.includes("ent") || t.includes("mental")
+  ) return 66;
+  if (t.includes("diagnostic") || t.includes("consultation") || t.includes("clinic") || /\blab\b/.test(t)) return 14;
+  return 54;
 }

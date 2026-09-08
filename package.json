@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "sync:md": "cp ../facilities.md data/facilities.md"
   },
   "dependencies": {
     "next": "16.3.4",
