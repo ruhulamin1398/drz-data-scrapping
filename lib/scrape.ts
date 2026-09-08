@@ -68,18 +68,7 @@ export async function pushDrx(f: DrxFacility): Promise<{ drxId: number; updated?
     name: f.name, divisionId: f.divisionId, districtId: f.districtId, typeId: f.typeId,
     fullAddress: f.fullAddress || "", phones: f.phones || [], extraInformation: f.extraInformation || "",
   };
-  if (f.drxId) {
-    const res = await fetch(`${base}/api/v1/facilities/${f.drxId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-      body: JSON.stringify(payload),
-    });
-    if (!res.ok) {
-      const t = await res.text().catch(() => "");
-      throw new Error(t.slice(0, 300) || `drx patch ${res.status}`);
-    }
-    return { drxId: f.drxId, updated: true };
-  }
+  if (f.drxId) return updateDrx(base, token, f.drxId, payload);
   const res = await fetch(`${base}/api/v1/facilities`, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -88,6 +77,40 @@ export async function pushDrx(f: DrxFacility): Promise<{ drxId: number; updated?
   const text = await res.text();
   let json: { success?: boolean; data?: { id?: number }; error?: { message?: string } } = {};
   try { json = JSON.parse(text); } catch { /* keep empty */ }
-  if (!res.ok || !json?.data?.id) throw new Error(json?.error?.message || text.slice(0, 300) || `drx ${res.status}`);
+  if (!res.ok || !json?.data?.id) {
+    const msg = json?.error?.message || text.slice(0, 300) || `drx ${res.status}`;
+    // Slug collision (retry of a row whose first POST succeeded but wasn't recorded,
+    // or a same-named facility): find the existing record and update it in place.
+    if (/already exists/i.test(msg)) {
+      const found = await findDrxByName(base, token, f.name);
+      if (found) return updateDrx(base, token, found, payload);
+    }
+    throw new Error(msg);
+  }
   return { drxId: json.data.id };
+}
+
+async function findDrxByName(base: string, token: string, name: string): Promise<number | null> {
+  const res = await fetch(`${base}/api/v1/facilities?search=${encodeURIComponent(name)}&fields=id,name&limit=20`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const json = await res.json().catch(() => null);
+  const items: { id: number; name: string }[] = json?.data?.items ?? [];
+  const target = name.trim().toLowerCase();
+  return items.find((it) => it.name?.trim().toLowerCase() === target)?.id
+    ?? (items.length === 1 ? items[0].id : null);
+}
+
+async function updateDrx(base: string, token: string, id: number, payload: object): Promise<{ drxId: number; updated: boolean }> {
+  const res = await fetch(`${base}/api/v1/facilities/${id}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(t.slice(0, 300) || `drx patch ${res.status}`);
+  }
+  return { drxId: id, updated: true };
 }
