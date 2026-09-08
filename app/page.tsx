@@ -35,12 +35,15 @@ export default function Home() {
   const [active, setActive] = useState<string[]>([]); // urls the browser is retrying right now
   const stopRef = useRef(false);
 
-  const group = groups.find((g) => g.key === groupKey);
+  const isAll = groupKey === "all" || groupKey === "";
+  const totalItems = groups.reduce((n, g) => n + g.items.length, 0);
   const shown = queue.filter((q) => filter === "all" || q.status === filter);
   const busyRetry = busy || active.length > 0;
 
+  const scopeParam = (gk = groupKey) => (gk && gk !== "all" ? `&group=${encodeURIComponent(gk)}` : "");
+
   async function loadQueue(gk = groupKey) {
-    const r = await fetch(`/api/queue?limit=1000${gk ? `&group=${encodeURIComponent(gk)}` : ""}`);
+    const r = await fetch(`/api/queue?limit=1000${scopeParam(gk)}`);
     const j = await r.json();
     if (!j.error) { setQueue(j.items); setCounts(j.counts); }
   }
@@ -153,20 +156,20 @@ export default function Home() {
     }
   }
 
-  // Bulk browser retry of this group's failed rows (full content, claimed synchronously
+  // Bulk browser retry of the visible failed rows (full content, claimed synchronously
   // as processing so cron can't steal them).
   async function retryFailed() {
-    if (busyRetry || !group) return;
+    if (busyRetry) return;
     const urls = queue.filter((q) => q.status === "failed").map((q) => q.source_url);
     if (!urls.length) return;
     setBusy(true);
     await fetch("/api/queue", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "retry", statuses: ["failed"], toStatus: "processing", fullContent: true, group: group.key }),
+      body: JSON.stringify({ action: "retry", statuses: ["failed"], toStatus: "processing", fullContent: true, ...(isAll ? {} : { group: groupKey }) }),
     });
     setBusy(false);
     await loadQueue();
-    const r = await fetch(`/api/queue?limit=1000&group=${encodeURIComponent(group.key)}`);
+    const r = await fetch(`/api/queue?limit=1000${scopeParam()}`);
     const j = await r.json();
     const rows: QRow[] = (j.items ?? []).filter((it: QRow) => urls.includes(it.source_url));
     const workers = Math.min(Math.max(1, Math.floor(settings.concurrency) || 1), 10);
@@ -198,7 +201,7 @@ export default function Home() {
     setActive((a) => [...a, url]);
     await patch(url, { status: "processing", failReason: null, fullContent: true } as object);
     await loadQueue();
-    const r = await fetch(`/api/queue?limit=1000${groupKey ? `&group=${encodeURIComponent(groupKey)}` : ""}`);
+    const r = await fetch(`/api/queue?limit=1000${scopeParam()}`);
     const j = await r.json();
     const fresh: QRow | undefined = (j.items ?? []).find((it: QRow) => it.source_url === url);
     if (fresh) await processOne(fresh, true);
@@ -248,8 +251,9 @@ export default function Home() {
         <div className="mt-1.5 flex gap-2">
           <select
             className="flex-1 rounded-xl border border-border bg-surface-alt px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
-            value={groupKey} onChange={(e) => setGroupKey(e.target.value)}
+            value={isAll ? "all" : groupKey} onChange={(e) => setGroupKey(e.target.value)}
           >
+            <option value="all">All groups ({totalItems})</option>
             {groups.map((g) => <option key={g.key} value={g.key}>{groupLabel(g)}</option>)}
           </select>
           {!settings.enabled ? (
