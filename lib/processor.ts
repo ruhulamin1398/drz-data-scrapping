@@ -100,9 +100,11 @@ export async function runProcessor(): Promise<TickResult> {
   if (!s || !s.enabled) return { status: "paused", claimed: 0, succeeded: 0, failed: 0, remaining: 0 };
   await pool.query("UPDATE settings SET heartbeat_at=now() WHERE id=1");
 
-  // Reconcile: rows stuck in processing (dead run) go back to pending.
+  // Reconcile: rows stuck in processing (dead run, closed tab, old rows without
+  // locked_at) go back to pending.
   await pool.query(
-    "UPDATE facility_queue SET status='pending', locked_at=NULL, updated_at=now() WHERE status='processing' AND locked_at < now() - INTERVAL '10 minutes'"
+    `UPDATE facility_queue SET status='pending', locked_at=NULL, updated_at=now()
+     WHERE status='processing' AND (locked_at IS NULL OR locked_at < now() - INTERVAL '10 minutes')`
   );
 
   const concurrency = Math.min(Math.max(1, s.concurrency || 1), 10);
