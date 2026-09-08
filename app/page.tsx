@@ -30,6 +30,8 @@ export default function Home() {
   const [queue, setQueue] = useState<QRow[]>([]);
   const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
   const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
+  const [page, setPage] = useState(1);
+  const [perPage, setPerPage] = useState(20);
   const [settings, setSettings] = useState<Settings>({ enabled: false, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState<string[]>([]); // urls the browser is retrying right now
@@ -37,13 +39,17 @@ export default function Home() {
 
   const isAll = groupKey === "all" || groupKey === "";
   const totalItems = groups.reduce((n, g) => n + g.items.length, 0);
-  const shown = queue.filter((q) => filter === "all" || q.status === filter);
+  const tabCount = filter === "all"
+    ? counts.pending + counts.processing + counts.success + counts.failed
+    : counts[filter];
+  const totalPages = Math.max(1, Math.ceil(tabCount / perPage));
   const busyRetry = busy || active.length > 0;
 
   const scopeParam = (gk = groupKey) => (gk && gk !== "all" ? `&group=${encodeURIComponent(gk)}` : "");
 
-  async function loadQueue(gk = groupKey) {
-    const r = await fetch(`/api/queue?limit=1000${scopeParam(gk)}`);
+  async function loadQueue(gk = groupKey, f = filter, p = page, per = perPage) {
+    const statusParam = f === "all" ? "" : `&status=${f}`;
+    const r = await fetch(`/api/queue?limit=${per}&offset=${(p - 1) * per}${statusParam}${scopeParam(gk)}`);
     const j = await r.json();
     if (!j.error) { setQueue(j.items); setCounts(j.counts); }
   }
@@ -70,14 +76,17 @@ export default function Home() {
       loadSettings();
     })();
   }, []);
-  useEffect(() => { if (groupKey) loadQueue(groupKey); }, [groupKey]);
+  useEffect(() => { if (groupKey) { setPage(1); loadQueue(groupKey, filter, 1, perPage); } }, [groupKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (page > totalPages) { setPage(totalPages); loadQueue(groupKey, filter, totalPages, perPage); }
+  }, [totalPages]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll while the server processor is enabled — the page is a monitor, no tab work needed.
   useEffect(() => {
     if (!settings.enabled) return;
     const t = setInterval(() => { loadQueue(); loadSettings(); }, 10000);
     return () => clearInterval(t);
-  }, [settings.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [settings.enabled, groupKey, filter, page, perPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function patch(url: string, body: object) {
     await fetch("/api/queue", {
@@ -156,11 +165,13 @@ export default function Home() {
     }
   }
 
-  // Bulk browser retry of the visible failed rows (full content, claimed synchronously
-  // as processing so cron can't steal them).
+  // Bulk browser retry of failed rows in scope (all pages, full content, claimed
+  // synchronously as processing so cron can't steal them).
   async function retryFailed() {
     if (busyRetry) return;
-    const urls = queue.filter((q) => q.status === "failed").map((q) => q.source_url);
+    const fr = await fetch(`/api/queue?status=failed&limit=1000${scopeParam()}`);
+    const fj = await fr.json();
+    const urls: string[] = (fj.items ?? []).map((it: QRow) => it.source_url);
     if (!urls.length) return;
     setBusy(true);
     await fetch("/api/queue", {
@@ -275,19 +286,22 @@ export default function Home() {
         </div>
       </div>
 
-      {/* filter */}
+      {/* filter tabs with counts */}
       <div className="mt-4 flex gap-1 rounded-xl bg-surface-alt p-1 text-sm">
-        {(["all", "pending", "success", "failed"] as const).map((f) => (
-          <button key={f} onClick={() => setFilter(f)}
-            className={`flex-1 rounded-lg px-3 py-2 font-medium capitalize transition ${
-              filter === f ? "bg-surface text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
-            }`}>{f}</button>
-        ))}
+        {(["all", "pending", "success", "failed"] as const).map((f) => {
+          const n = f === "all" ? counts.pending + counts.processing + counts.success + counts.failed : counts[f];
+          return (
+            <button key={f} onClick={() => { setFilter(f); setPage(1); loadQueue(groupKey, f, 1, perPage); }}
+              className={`flex-1 rounded-lg px-3 py-2 font-medium capitalize transition ${
+                filter === f ? "bg-surface text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
+              }`}>{f} ({n})</button>
+          );
+        })}
       </div>
 
       {/* list */}
       <div className="mt-3 space-y-2">
-        {shown.map((q) => (
+        {queue.map((q) => (
           <div key={q.id} className="rounded-xl border border-border bg-surface px-3 py-2.5">
             <div className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">
@@ -317,11 +331,26 @@ export default function Home() {
             )}
           </div>
         ))}
-        {shown.length === 0 && (
+        {queue.length === 0 && (
           <p className="rounded-2xl border border-border bg-surface p-6 text-center text-sm text-text-secondary">
-            No facilities in this group yet.
+            No facilities in this view yet.
           </p>
         )}
+      </div>
+
+      {/* pagination */}
+      <div className="mt-4 flex items-center justify-center gap-2 text-sm">
+        <button onClick={() => { const p = Math.max(1, page - 1); setPage(p); loadQueue(groupKey, filter, p, perPage); }}
+          disabled={page <= 1}
+          className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text-primary disabled:opacity-40">← Prev</button>
+        <span className="text-xs text-text-secondary">Page {page} of {totalPages}</span>
+        <button onClick={() => { const p = Math.min(totalPages, page + 1); setPage(p); loadQueue(groupKey, filter, p, perPage); }}
+          disabled={page >= totalPages}
+          className="rounded-lg border border-border bg-surface px-3 py-1.5 text-text-primary disabled:opacity-40">Next →</button>
+        <select value={perPage} onChange={(e) => { const n = Number(e.target.value); setPerPage(n); setPage(1); loadQueue(groupKey, filter, 1, n); }}
+          className="rounded-lg border border-border bg-surface px-2 py-1.5 text-xs text-text-primary outline-none focus:border-primary">
+          {[10, 20, 50, 100].map((n) => <option key={n} value={n}>{n} / page</option>)}
+        </select>
       </div>
     </main>
   );

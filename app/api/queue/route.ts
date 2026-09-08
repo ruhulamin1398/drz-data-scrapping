@@ -1,20 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
-// GET /api/queue?status=..&group=..&limit=.. — list + counts, optionally scoped to one group
+// GET /api/queue?status=..&group=..&limit=..&offset=.. — page of rows + unfiltered counts
 export async function GET(req: NextRequest) {
   try {
     const status = req.nextUrl.searchParams.get("status");
     const group = req.nextUrl.searchParams.get("group");
     const limit = Math.min(Number(req.nextUrl.searchParams.get("limit") ?? 500), 1000);
+    const offset = Math.max(0, Number(req.nextUrl.searchParams.get("offset") ?? 0) || 0);
     const pool = db();
     const conds: string[] = [];
     const vals: (string | number)[] = [];
     if (status) { vals.push(status); conds.push(`status=$${vals.length}`); }
     if (group) { vals.push(group); conds.push(`group_key=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-    vals.push(limit);
-    const rows = await pool.query(`SELECT * FROM facility_queue ${where} ORDER BY id LIMIT $${vals.length}`, vals);
+    vals.push(limit, offset);
+    const rows = await pool.query(`SELECT * FROM facility_queue ${where} ORDER BY id LIMIT $${vals.length - 1} OFFSET $${vals.length}`, vals);
     const cvals: string[] = [];
     const cwhere = group ? `WHERE group_key=$1` : "";
     if (group) cvals.push(group);
