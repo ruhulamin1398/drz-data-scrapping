@@ -249,7 +249,11 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
     } else drxId = json.data.id as string;
   }
   let degrees = 0;
+  const haveDegrees = d.degrees.length
+    ? await existingDegreeTitles(base, token, String(drxId))
+    : new Set<string>();
   for (const g of d.degrees) {
+    if (haveDegrees.has(g.title.trim().toLowerCase())) continue; // retry-safe: no dupes
     const r = await fetch(`${base}/api/v1/degrees`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
       body: JSON.stringify({
@@ -260,8 +264,13 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
     if (r.ok) degrees++;
   }
   let chambers = 0;
+  const haveChambers = d.chambers.length
+    ? await existingChamberKeys(base, token, String(drxId))
+    : new Set<string>();
   for (const [i, c] of d.chambers.entries()) {
     const facilityId = await findFacilityByName(base, token, c.facilityName);
+    const key = chamberKey(facilityId, c.facilityName, c.serialTime);
+    if (haveChambers.has(key)) continue; // retry-safe: no dupes
     const room = /room\s*(\d+)/i.exec(c.address ?? "");
     const r = await fetch(`${base}/api/v1/chambers`, {
       method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -296,6 +305,36 @@ function cleanWorkingDays(wd: Record<string, string[]> | undefined): Record<stri
 
 function normFacility(s: string): string {
   return s.toLowerCase().replace(/,\s*sylhet\s*$/i, "").replace(/\s+/g, " ").trim();
+}
+
+function normKey(s: string | undefined): string {
+  return (s ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+function chamberKey(facilityId: number | null, facilityName: string | undefined, serialTime: string | undefined): string {
+  return facilityId ? `id:${facilityId}` : `name:${normKey(facilityName)}|${normKey(serialTime)}`;
+}
+
+// Existing titles/keys for a doctor — retries skip what is already there.
+async function existingDegreeTitles(base: string, token: string, doctorId: string): Promise<Set<string>> {
+  const res = await fetch(`${base}/api/v1/degrees?doctorId=${doctorId}&page=1&limit=100&order=asc`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).catch(() => null);
+  if (!res || !res.ok) return new Set();
+  const json = await res.json().catch(() => null);
+  const items: { title?: string }[] = json?.data?.items ?? json?.data ?? [];
+  return new Set((Array.isArray(items) ? items : []).map((x) => normKey(x.title)));
+}
+
+async function existingChamberKeys(base: string, token: string, doctorId: string): Promise<Set<string>> {
+  const res = await fetch(`${base}/api/v1/chambers?doctorId=${doctorId}&page=1&limit=100&order=asc`, {
+    headers: { Authorization: `Bearer ${token}` },
+  }).catch(() => null);
+  if (!res || !res.ok) return new Set();
+  const json = await res.json().catch(() => null);
+  const items: { facilityId?: number; facilityName?: string; serialTime?: string }[] =
+    json?.data?.items ?? json?.data ?? [];
+  return new Set((Array.isArray(items) ? items : []).map((x) => chamberKey(x.facilityId ?? null, x.facilityName, x.serialTime)));
 }
 
 // Match a chamber name to an existing facility row (conservative: single normalized match).
