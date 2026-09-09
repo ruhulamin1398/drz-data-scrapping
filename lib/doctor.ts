@@ -11,7 +11,7 @@ export type DoctorChamber = {
 export type ExtractedDoctor = {
   name: string; designation?: string; specialityArea?: string; bmdcRegNo?: string;
   degrees: DoctorDegree[]; workingIn?: string; phones: string[];
-  email?: string; biography?: string; chambers: DoctorChamber[];
+  email?: string; biography?: string; extraInformation?: string; chambers: DoctorChamber[];
 };
 export type DrxDoctor = ExtractedDoctor & { departmentIds: string[]; sourceUrl: string; drxId?: string };
 
@@ -46,7 +46,8 @@ Rules:
 - workingIn: STRICTLY lowercase "designation, ${deptSlug}, institution" (exactly two commas, e.g. "assistant professor, ${deptSlug}, sylhet mag osmani medical college hospital"). Use the workplace/college line as institution. REQUIRED — never empty or malformed.
 - phones: appointment/serial numbers as written (e.g. "+8801601655913"). [] if none.
 - email: "" if absent.
-- biography: the descriptive paragraph about the doctor. "" if absent.
+- biography: always empty string (do not output anything here).
+- extraInformation: the full descriptive paragraph about the doctor (About text). Empty string if absent.
 - chambers: one entry per "Chamber 0N & Appointment" block: facilityName (chamber/hospital name), address (Address line), serialTime (Visiting Hour line as written), serialContactNumber (Appointment number). workingDays: object with ALL 7 keys Sunday..Saturday; each an array of "HH:MM" 24h start/end pairs derived from serialTime (e.g. "3pm to 5pm" -> ["15:00","17:00"]); closed or unknown days -> []. [] if no chamber blocks.
 
 Department context: slug "${deptSlug}", title "${deptName}".
@@ -86,8 +87,8 @@ Content:
   }
   if (!d.name || !String(d.name).trim() || /<.*>/.test(String(d.name))) throw new Error("name empty from model");
   if (!d.designation || !String(d.designation).trim()) throw new Error("designation empty from model");
-  const workingIn = String(d.workingIn ?? "").trim().toLowerCase();
-  if (!validWorkingIn(workingIn)) throw new Error(`workingIn malformed from model: ${workingIn.slice(0, 100)}`);
+  const workingIn = normalizeWorkingIn(String(d.workingIn ?? ""), deptSlug);
+  if (!workingIn) throw new Error(`workingIn malformed from model: ${String(d.workingIn ?? "").slice(0, 100)}`);
   return {
     name: String(d.name).trim(),
     designation: String(d.designation).trim(),
@@ -100,7 +101,8 @@ Content:
     workingIn,
     phones: Array.isArray(d.phones) ? d.phones.map(String).map((s) => s.trim()).filter(Boolean) : [],
     email: String(d.email ?? "").trim(),
-    biography: String(d.biography ?? "").trim(),
+    biography: "",
+    extraInformation: String(d.extraInformation ?? "").trim(),
     chambers: Array.isArray(d.chambers) ? d.chambers.filter((x) => x && x.facilityName).map((x) => ({
       facilityName: String(x.facilityName).trim(), address: String(x.address ?? "").trim(),
       serialTime: String(x.serialTime ?? "").trim(), serialContactNumber: String(x.serialContactNumber ?? "").trim(),
@@ -148,11 +150,17 @@ function looksJson(s: string): boolean {
 }
 
 // Backend rejects malformed optionals outright — sanitize instead of failing the row.
-function validWorkingIn(s: string): boolean {
-  return /^[^,]+,\s*[^,]+,\s*[^,]+$/.test(s.trim());
+// Backend wants exactly "designation, dept, institution" but institutions contain
+// commas ("... Hospital, Sylhet") — rejoin extras into the institution segment,
+// coerce the middle segment to our dept slug, lowercase everything.
+function normalizeWorkingIn(s: string, deptSlug: string): string | null {
+  const segs = s.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  if (segs.length < 3 || !segs[0] || !segs[2]) return null;
+  return `${segs[0]}, ${deptSlug}, ${segs.slice(2).join(", ")}`;
 }
 
-export function chamberText(chambers: DoctorChamber[]): string {  return chambers.map((c, i) =>
+export function chamberText(chambers: DoctorChamber[]): string {
+  return chambers.map((c, i) =>
     `Chamber ${i + 1}: ${c.facilityName}${c.address ? ` | ${c.address}` : ""}${c.serialTime ? ` | ${c.serialTime}` : ""}${c.serialContactNumber ? ` | ${c.serialContactNumber}` : ""}`
   ).join("\n");
 }
@@ -164,7 +172,7 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
   const token = process.env.DRX_ADMIN_TOKEN || "";
   if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
   if (!d.name || !d.departmentIds.length) throw new Error("name + departmentIds required");
-  const extra = [chamberText(d.chambers), `Source: ${d.sourceUrl}`].filter(Boolean).join("\n");
+  const extra = [d.extraInformation, chamberText(d.chambers), `Source: ${d.sourceUrl}`].filter(Boolean).join("\n");
   const payload = {
     name: d.name, designation: d.designation || undefined,
     specialityArea: d.specialityArea || undefined, bmdcRegNo: d.bmdcRegNo || undefined,
@@ -172,7 +180,6 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
     workingIn: d.workingIn || undefined,
     phones: d.phones.length ? d.phones : undefined,
     email: d.email && /@/.test(d.email) ? d.email : undefined,
-    biography: d.biography || undefined,
     extraInformation: extra || undefined,
   };
   let drxId: string; let updated = false;
