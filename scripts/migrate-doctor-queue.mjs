@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS doctor_queue (
   department_ids TEXT[] NOT NULL DEFAULT '{}',
   city TEXT NOT NULL DEFAULT 'sylhet',
   status TEXT NOT NULL DEFAULT 'pending',
-  drx_id INT,
+  drx_id TEXT, -- backend doctor ids are cuids, not integers
   fail_reason TEXT,
   locked_at TIMESTAMPTZ,
   full_content BOOL NOT NULL DEFAULT false,
@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS doctor_queue (
 );`);
 await c.query(`CREATE INDEX IF NOT EXISTS doctor_queue_status_idx ON doctor_queue (status)`);
 await c.query(`CREATE INDEX IF NOT EXISTS doctor_queue_specialty_idx ON doctor_queue (specialty_slug)`);
+// Backend doctor ids are cuids (early version of this table used INT).
+await c.query(`ALTER TABLE doctor_queue ALTER COLUMN drx_id TYPE TEXT USING drx_id::text`).catch(() => {});
 
 console.log("OK: doctor_queue ready");
 await c.end();

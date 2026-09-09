@@ -17,8 +17,7 @@ const NAV = [
   {
     href: "/doctors",
     label: "Doctors",
-    desc: "coming soon",
-    soon: true,
+    desc: "profile → DRX",
     icon: (
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-5 w-5">
         <path strokeLinecap="round" strokeLinejoin="round" d="M12 21v-7m0 0h-4m4 0h4M7 3h10v5a5 5 0 0 1-10 0V3Zm-3 5H3v2a3 3 0 0 0 3 3m14-5h1v2a3 3 0 0 1-3 3" />
@@ -84,11 +83,6 @@ export default function Sidebar() {
                   {item.desc}
                 </span>
               </span>
-              {item.soon && (
-                <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${active ? "bg-sidebar-bg/15" : "bg-sidebar-hover text-sidebar-text-muted"}`}>
-                  soon
-                </span>
-              )}
             </Link>
           );
         })}
