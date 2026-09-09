@@ -2,6 +2,7 @@
 // Chambers have no doctor-link field on the backend (CreateChamberDto lacks doctorId),
 // so chamber blocks are stored as structured text in extraInformation until backend adds it.
 import { fetchSource } from "./scrape";
+import { formatExamples } from "./doctor-examples";
 
 export type DoctorDegree = { title: string; subject?: string; institution?: string; country?: string };
 export type DoctorChamber = {
@@ -35,8 +36,10 @@ export async function extractDoctor(md: string, deptSlug: string, deptName: stri
   const nexUrl = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/v1/chat/completions";
   const model = process.env.NEX_MODEL || "gemini";
   if (!md) throw new Error("profile content required");
-  const prompt =
-`Role: You are a precise medical-directory data extractor. Input is Jina markdown of one doctor profile page from doctorbangladesh.com (title line, "Chamber 0N & Appointment" blocks, then a descriptive paragraph), plus the doctor's card entry from the specialty list page. Page-top nav/search boilerplate and any Bengali ticket-booking notice ("টিকিট নেয়ার নিয়ম") are noise — ignore them, except a personal website link which goes to "website".
+  // Full prompt: rules + schema + two worked examples (~6k tokens — fine for 250k ctx).
+  // Lean prompt: same rules, no examples. Used as fallback when the model echoes
+  // the long prompt instead of answering (different stimulus breaks the loop).
+  const promptFull = `Role: You are a precise medical-directory data extractor. Input is Jina markdown of one doctor profile page from doctorbangladesh.com (title line, "Chamber 0N & Appointment" blocks, then a descriptive paragraph), plus the doctor's card entry from the specialty list page. Page-top nav/search boilerplate and any Bengali ticket-booking notice ("টিকিট নেয়ার নিয়ম") are noise — ignore them, except a personal website link which goes to "website".
 
 Output contract: respond with ONLY one JSON object matching the schema below. No reasoning, no markdown fences, no commentary, no trailing text. Missing values become "" (strings) or [] (arrays) — never null, never placeholders like "N/A", "<...>", "unknown".
 
@@ -86,30 +89,36 @@ Field rules:
 
 Department context: slug "${deptSlug}", title "${deptName}".
 ${cardText ? `Card list entry (degrees line, may contain the BMDC Reg. No):\n` + cardText + `\n` : ""}
+Study these two complete worked examples first — your output must follow the same shape and conventions:
+${formatExamples()}
+
+Now extract from the following real page. Content:
+` + md;
+  const promptLean =
+`Extract doctor info from the Jina markdown below. Output ONLY one JSON object, no fences, no commentary. Missing values are "" or [].
+Keys: name (full name WITH title, REQUIRED), designation (job title, REQUIRED, Title Case), specialityArea (X Specialist line), bmdcRegNo (from BMDC Reg. No line), gender (male/female from He-She pronouns), website (doctor's own external URL only), degrees (split qualification commas into {title,subject,institution,country}), workingIn (REQUIRED, lowercase "designation, ${deptSlug}, institution" with exactly two commas, no commas inside segments), phones (appointment numbers verbatim), email, biography (always ""), extraInformation (full descriptive paragraph), chambers ([{facilityName, address, serialTime verbatim, serialContactNumber, workingDays with all 7 day keys Sunday..Saturday mapping to [start,end] 24h HH:MM arrays, closed days []}]).
+Dept: slug "${deptSlug}", title "${deptName}".
+${cardText ? `Card entry:\n` + cardText + `\n` : ""}
 Content:
 ` + md;
-  const res = await fetch(nexUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 3000, temperature: 0.0, stream: false }),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`extract failed: ${res.status} ${t.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  let raw: string = data?.choices?.[0]?.message?.content?.trim() ?? "";
-  // Second attempt when the model wraps output in fences, truncates it, or echoes the prompt.
-  if (!looksJson(raw) || !tryParse(raw)) {
-    await new Promise((r) => setTimeout(r, 1000));
-    const res2 = await fetch(nexUrl, {
+  async function callModel(prompt: string): Promise<string> {
+    const res = await fetch(nexUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt + "\nReturn ONLY the JSON object." }], max_tokens: 3000, temperature: 0.0, stream: false }),
+      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 3000, temperature: 0.0, stream: false }),
     });
-    if (!res2.ok) throw new Error(`extract failed: ${res2.status}`);
-    const data2 = await res2.json();
-    raw = data2?.choices?.[0]?.message?.content?.trim() ?? "";
+    if (!res.ok) {
+      const t = await res.text().catch(() => "");
+      throw new Error(`extract failed: ${res.status} ${t.slice(0, 200)}`);
+    }
+    const data = await res.json();
+    return data?.choices?.[0]?.message?.content?.trim() ?? "";
+  }
+  // Attempt 1: full prompt with examples. Attempt 2 (echo/garbage): lean prompt.
+  let raw = await callModel(promptFull);
+  if (!looksJson(raw) || !tryParse(raw)) {
+    await new Promise((r) => setTimeout(r, 1000));
+    raw = await callModel(promptLean + "\nReturn ONLY the JSON object.");
   }
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
