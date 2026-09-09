@@ -179,6 +179,6 @@ export const DOCTOR_EXAMPLES: DoctorExample[] = [
 
 export function formatExamples(): string {
   return DOCTOR_EXAMPLES.map((ex, i) =>
-    `--- Example ${i + 1}: ${ex.label} (specialty slug ${ex.specialty}, title ${ex.deptName})${ex.card ? "\nCard entry:\n" + ex.card : ""}\nProfile markdown:\n${ex.input}\nExpected JSON:\n${JSON.stringify(ex.output)}`
+    `<worked_example id="${i + 1}" purpose="study only — do NOT copy, do NOT explain">\n<specialty slug="${ex.specialty}" title="${ex.deptName}" />\n<note>${ex.label}</note>\n${ex.card ? `<card>\n${ex.card}\n</card>\n` : ""}<input_profile_markdown>\n${ex.input}\n</input_profile_markdown>\n<correct_output_json>\n${JSON.stringify(ex.output)}\n</correct_output_json>\n</worked_example>`
   ).join("\n");
 }

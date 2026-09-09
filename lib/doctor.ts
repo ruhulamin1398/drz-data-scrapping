@@ -41,35 +41,7 @@ export async function extractDoctor(md: string, deptSlug: string, deptName: stri
   // the long prompt instead of answering (different stimulus breaks the loop).
   const promptFull = `Role: You are a precise medical-directory data extractor. Input is Jina markdown of one doctor profile page from doctorbangladesh.com (title line, "Chamber 0N & Appointment" blocks, then a descriptive paragraph), plus the doctor's card entry from the specialty list page. Page-top nav/search boilerplate and any Bengali ticket-booking notice ("টিকিট নেয়ার নিয়ম") are noise — ignore them, except a personal website link which goes to "website".
 
-Output contract: respond with ONLY one JSON object matching the schema below. No reasoning, no markdown fences, no commentary, no trailing text. Missing values become "" (strings) or [] (arrays) — never null, never placeholders like "N/A", "<...>", "unknown".
-
-Schema with a full example:
-{
-  "name": "Prof. Dr. Shishir Basak",
-  "designation": "Professor",
-  "specialityArea": "Cardiology Specialist",
-  "bmdcRegNo": "",
-  "gender": "male",
-  "website": "https://drshishirbasak.com/",
-  "degrees": [
-    { "title": "MBBS", "subject": "", "institution": "DMC", "country": "" },
-    { "title": "MD", "subject": "Cardiology", "institution": "", "country": "" }
-  ],
-  "workingIn": "professor, ${deptSlug}, parkview medical college & hospital, sylhet",
-  "phones": ["+8801726450182"],
-  "email": "",
-  "biography": "",
-  "extraInformation": "Prof. Dr. Shishir Basak is a Cardiologist in Sylhet. His qualification is ...",
-  "chambers": [
-    {
-      "facilityName": "Mount Adora Hospital, Akhalia, Sylhet",
-      "address": "Sylhet-Sunamganj Highway, Akhalia, Sylhet - 3100",
-      "serialTime": "5pm to 10pm (Closed: Sat & Friday)",
-      "serialContactNumber": "+8801726450182",
-      "workingDays": { "Sunday": ["17:00","22:00"], "Monday": ["17:00","22:00"], "Tuesday": ["17:00","22:00"], "Wednesday": ["17:00","22:00"], "Thursday": ["17:00","22:00"], "Friday": [], "Saturday": [] }
-    }
-  ]
-}
+Output contract: respond with ONLY one JSON object with exactly these keys: name, designation, specialityArea, bmdcRegNo, gender, website, degrees (array of {title,subject,institution,country}), workingIn, phones (array), email, biography, extraInformation, chambers (array of {facilityName,address,serialTime,serialContactNumber,workingDays}). No reasoning, no markdown fences, no commentary, no trailing text. Missing values become "" (strings) or [] (arrays) — never null, never placeholders like "N/A", "<...>", "unknown".
 
 Field rules:
 - name: full name WITH title exactly as shown in the Title line (e.g. "Dr. Md. Sirajur Rahman Sarwar", "Prof. Dr. Shishir Basak"). REQUIRED — never empty.
@@ -92,7 +64,7 @@ ${cardText ? `Card list entry (degrees line, may contain the BMDC Reg. No):\n` +
 Study these two complete worked examples first — your output must follow the same shape and conventions:
 ${formatExamples()}
 
-Now extract from the following real page. Content:
+Now extract from the following real page. Begin your response with { and end with }. Output ONLY the JSON object — no explanations, no repetition of these instructions. Content:
 ` + md;
   const promptLean =
 `Extract doctor info from the Jina markdown below. Output ONLY one JSON object, no fences, no commentary. Missing values are "" or [].
