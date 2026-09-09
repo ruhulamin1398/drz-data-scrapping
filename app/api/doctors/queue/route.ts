@@ -1,11 +1,12 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 
-// GET /api/doctors/queue?status=..&specialty=..&limit=..&offset=.. — page of rows + unfiltered counts.
+// GET /api/doctors/queue?status=..&specialty=..&city=..&limit=..&offset=.. — page of rows + unfiltered counts.
 export async function GET(req: NextRequest) {
   try {
     const status = req.nextUrl.searchParams.get("status");
     const specialty = req.nextUrl.searchParams.get("specialty");
+    const city = req.nextUrl.searchParams.get("city");
     const all = req.nextUrl.searchParams.get("limit") === "all";
     const limit = Math.min(Number(req.nextUrl.searchParams.get("limit") ?? 500), 1000);
     const offset = Math.max(0, Number(req.nextUrl.searchParams.get("offset") ?? 0) || 0);
@@ -14,6 +15,7 @@ export async function GET(req: NextRequest) {
     const vals: (string | number)[] = [];
     if (status) { vals.push(status); conds.push(`status=$${vals.length}`); }
     if (specialty) { vals.push(specialty); conds.push(`specialty_slug=$${vals.length}`); }
+    if (city) { vals.push(city); conds.push(`city=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
     let sql = `SELECT * FROM doctor_queue ${where} ORDER BY id`;
     if (!all) {
@@ -21,9 +23,11 @@ export async function GET(req: NextRequest) {
       sql += ` LIMIT $${vals.length - 1} OFFSET $${vals.length}`;
     }
     const rows = await pool.query(sql, vals);
+    const cconds: string[] = [];
     const cvals: string[] = [];
-    const cwhere = specialty ? `WHERE specialty_slug=$1` : "";
-    if (specialty) cvals.push(specialty);
+    if (specialty) { cvals.push(specialty); cconds.push(`specialty_slug=$${cvals.length}`); }
+    if (city) { cvals.push(city); cconds.push(`city=$${cvals.length}`); }
+    const cwhere = cconds.length ? `WHERE ${cconds.join(" AND ")}` : "";
     const counts = await pool.query(`SELECT status, COUNT(*) c FROM doctor_queue ${cwhere} GROUP BY status`, cvals);
     const byStatus: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0 };
     for (const r of counts.rows) byStatus[r.status] = Number(r.c);

@@ -16,6 +16,8 @@ export default function Doctors() {
   const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
   const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
   const [specialty, setSpecialty] = useState("");
+  const [cities, setCities] = useState<{ city: string; count: number }[]>([]);
+  const [city, setCity] = useState("");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState<number | "all">(20);
   const [busy, setBusy] = useState(false);
@@ -29,18 +31,24 @@ export default function Doctors() {
     : counts[filter];
   const totalPages = perPage === "all" ? 1 : Math.max(1, Math.ceil(tabCount / perPage));
 
-  async function load(sp = specialty, f = filter, p = page, per = perPage) {
+  async function load(sp = specialty, f = filter, p = page, per = perPage, c = city) {
     const q = new URLSearchParams();
     if (per === "all") q.set("limit", "all");
     else { q.set("limit", String(per)); q.set("offset", String((p - 1) * per)); }
     if (f !== "all") q.set("status", f);
     if (sp) q.set("specialty", sp);
+    if (c) q.set("city", c);
     const r = await fetch(`/api/doctors/queue?${q.toString()}`);
     const j = await r.json();
     if (!j.error) { setRows(j.items); setCounts(j.counts); }
   }
 
-  useEffect(() => { load("", "all", 1, perPage); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    load("", "all", 1, perPage, "");
+    fetch("/api/doctors/cities").then((r) => r.json()).then((j) => {
+      if (j.cities?.length) setCities(j.cities);
+    }).catch(() => {});
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function patch(url: string, body: object) {
     await fetch("/api/doctors/queue", {
@@ -164,7 +172,17 @@ export default function Doctors() {
       </div>
 
       <div className="mt-3 rounded-2xl border border-border bg-surface p-4 shadow-sm">
-        <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">Specialty</label>
+        <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">City group</label>
+        <div className="mt-1.5 flex gap-2">
+          <select
+            className="flex-1 rounded-xl border border-border bg-surface-alt px-3 py-2.5 text-sm capitalize text-text-primary outline-none focus:border-primary"
+            value={city} onChange={(e) => { setCity(e.target.value); setPage(1); load(specialty, filter, 1, perPage, e.target.value); }}
+          >
+            <option value="">All cities ({cities.reduce((n, c) => n + c.count, 0)})</option>
+            {cities.map((c) => <option key={c.city} value={c.city}>{c.city} ({c.count})</option>)}
+          </select>
+        </div>
+        <label className="mt-3 block text-xs font-medium uppercase tracking-wide text-text-secondary">Specialty</label>
         <div className="mt-1.5 flex gap-2">
           <select
             className="flex-1 rounded-xl border border-border bg-surface-alt px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
