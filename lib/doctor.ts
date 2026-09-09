@@ -146,6 +146,19 @@ const DEPT_TITLES: Record<string, string> = {
   "psychiatrist": "Psychiatrist", "rheumatologist": "Rheumatologist",
   "sexologist": "Sex Specialist", "dermatologist": "Dermatologist",
   "urologist": "Urologist", "vascular-surgeon": "Vascular Surgeon",
+  "breast-surgeon": "Breast Surgeon", "cancer-surgeon": "Cancer Surgeon",
+  "diabetologist": "Diabetologist", "nutritionist": "Nutritionist",
+  "neuro-ophthalmologist": "Neuro-ophthalmologist", "gynecological-oncologist": "Gynecological Oncologist",
+  "pediatric-hematologist": "Pediatric Hematologist", "hepatobiliary-surgeon": "Hepatobiliary Surgeon",
+  "doctor-normal-delivery": "Normal Delivery Specialist", "occupational-therapist": "Occupational Therapist",
+  "pediatric-cardiologist": "Pediatric Cardiologist", "pediatric-gastroenterologist": "Pediatric Gastroenterologist",
+  "pediatric-neurologist": "Pediatric Neurologist", "pediatric-neurosurgeon": "Pediatric Neurosurgeon",
+  "pediatric-nephrologist": "Pediatric Nephrologist", "pediatric-ophthalmologist": "Pediatric Ophthalmologist",
+  "pediatric-orthopedic-surgeon": "Pediatric Orthopedic", "pediatric-urologist": "Pediatric Urologist",
+  "physiotherapist": "Physiotherapist", "psychologist": "Psychologist",
+  "spine-surgeon": "Spine Surgeon", "best-child-psychiatrist": "Child & Adolescent Psychiatrist",
+  "female-dentist": "Dentist (Female)", "orthodontist": "Orthodontist",
+  "sonologist": "Sonologist",
 };
 
 export function deptTitle(slug: string): string {
