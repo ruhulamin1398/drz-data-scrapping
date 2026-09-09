@@ -14,7 +14,7 @@ const SPECIALTIES = ["anesthesiologist","oncologist","cardiac-surgeon","cardiolo
 export default function Doctors() {
   const [rows, setRows] = useState<DRow[]>([]);
   const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
-  const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
+  const [filter, setFilter] = useState<"all" | "pending" | "processing" | "success" | "failed">("all");
   const [specialty, setSpecialty] = useState("");
   const [cities, setCities] = useState<{ city: string; count: number }[]>([]);
   const [city, setCity] = useState("");
@@ -260,7 +260,7 @@ export default function Doctors() {
       </div>
 
       <div className="mt-4 flex gap-1 rounded-xl bg-surface-alt p-1 text-sm">
-        {(["all", "pending", "success", "failed"] as const).map((f) => {
+        {(["all", "pending", "processing", "success", "failed"] as const).map((f) => {
           const n = f === "all" ? counts.pending + counts.processing + counts.success + counts.failed : counts[f];
           return (
             <button key={f} onClick={() => { setFilter(f); setPage(1); load(specialty, f, 1, perPage); }}
