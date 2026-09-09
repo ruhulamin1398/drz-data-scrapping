@@ -50,7 +50,7 @@ async function processOne(q) {
 
     await patch(q.source_url, { status: "success", name: ej.doctor.name, drxId: dj.drxId, failReason: null });
     ok++;
-    console.log(`ok ${ok + fail}/${MAX} :: ${ej.doctor.name} -> ${dj.drxId} (${dj.degrees} deg)`);
+    console.log(`ok ${ok + fail}/${MAX} :: ${ej.doctor.name} -> ${dj.drxId} (${dj.degrees} deg, ${dj.chambers} ch)`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     if (quotaHit(msg)) { stopped = msg.slice(0, 120); }

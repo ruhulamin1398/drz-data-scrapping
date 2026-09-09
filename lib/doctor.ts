@@ -64,8 +64,8 @@ Content:
   }
   const data = await res.json();
   let raw: string = data?.choices?.[0]?.message?.content?.trim() ?? "";
-  // Second attempt when the model wraps output in fences or truncates it.
-  if (!looksJson(raw)) {
+  // Second attempt when the model wraps output in fences, truncates it, or echoes the prompt.
+  if (!looksJson(raw) || !tryParse(raw)) {
     await new Promise((r) => setTimeout(r, 1000));
     const res2 = await fetch(nexUrl, {
       method: "POST",
@@ -79,11 +79,10 @@ Content:
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error(`extract not JSON: ${raw.slice(0, 150)}`);
-  let d: Partial<ExtractedDoctor>;
-  try {
-    d = JSON.parse(raw.slice(start, end + 1)) as Partial<ExtractedDoctor>;
-  } catch (e) {
-    throw new Error(`extract bad JSON: ${e instanceof Error ? e.message : String(e)} :: ${raw.slice(Math.max(0, start), start + 200)}`);
+  const d = tryParse(raw.slice(start, end + 1));
+  if (!d) {
+    const probe = raw.slice(start, start + 200);
+    throw new Error(`extract bad JSON :: ${probe}`);
   }
   if (!d.name || !String(d.name).trim() || /<.*>/.test(String(d.name))) throw new Error("name empty from model");
   if (!d.designation || !String(d.designation).trim()) throw new Error("designation empty from model");
@@ -134,6 +133,15 @@ export function deptTitle(slug: string): string {
   return DEPT_TITLES[slug] ?? slug;
 }
 
+function tryParse(s: string): Partial<ExtractedDoctor> | null {
+  try {
+    const v = JSON.parse(s) as Partial<ExtractedDoctor>;
+    return v && typeof v === "object" && typeof v.name === "string" ? v : null;
+  } catch {
+    return null;
+  }
+}
+
 function looksJson(s: string): boolean {
   const t = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
   return t.startsWith("{") && t.endsWith("}");
@@ -149,8 +157,9 @@ export function chamberText(chambers: DoctorChamber[]): string {  return chamber
   ).join("\n");
 }
 
-// Step 3: POST doctor, then POST each degree with doctorId. Update in place when drxId given.
-export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated?: boolean; degrees: number }> {
+// Step 3: POST doctor, then POST each degree with doctorId, then POST each chamber
+// with doctorId + facilityId (matched) or facilityName (free text). Update in place when drxId given.
+export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated?: boolean; degrees: number; chambers: number }> {
   const base = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").replace(/\/$/, "");
   const token = process.env.DRX_ADMIN_TOKEN || "";
   if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
@@ -199,7 +208,56 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
     });
     if (r.ok) degrees++;
   }
-  return { drxId: drxId!, updated: updated || undefined, degrees };
+  let chambers = 0;
+  for (const [i, c] of d.chambers.entries()) {
+    const facilityId = await findFacilityByName(base, token, c.facilityName);
+    const room = /room\s*(\d+)/i.exec(c.address ?? "");
+    const r = await fetch(`${base}/api/v1/chambers`, {
+      method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({
+        doctorId: String(drxId),
+        ...(facilityId ? { facilityId } : { facilityName: c.facilityName }),
+        roomNo: room ? Number(room[1]) : undefined,
+        serialContactNumber: c.serialContactNumber || undefined,
+        serialTime: c.serialTime || undefined,
+        workingDays: cleanWorkingDays(c.workingDays),
+        extraInformation: c.address || undefined,
+        isPrimary: i === 0,
+        sourceUrls: [d.sourceUrl],
+      }),
+    });
+    if (r.ok) chambers++;
+  }
+  return { drxId: drxId!, updated: updated || undefined, degrees, chambers };
+}
+
+// workingDays must be day -> string[]; the model sometimes emits booleans.
+// Coerce to the valid shape (unknown/closed days -> []).
+function cleanWorkingDays(wd: Record<string, string[]> | undefined): Record<string, string[]> {
+  const days = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const out: Record<string, string[]> = {};
+  for (const day of days) {
+    const v = (wd as Record<string, unknown> | undefined)?.[day];
+    out[day] = Array.isArray(v) ? v.map(String) : [];
+  }
+  return out;
+}
+
+function normFacility(s: string): string {
+  return s.toLowerCase().replace(/,\s*sylhet\s*$/i, "").replace(/\s+/g, " ").trim();
+}
+
+// Match a chamber name to an existing facility row (conservative: single normalized match).
+async function findFacilityByName(base: string, token: string, name: string): Promise<number | null> {
+  const res = await fetch(`${base}/api/v1/facilities?search=${encodeURIComponent(name)}&fields=id,name&limit=20`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) return null;
+  const json = await res.json().catch(() => null);
+  const items: { id: number; name: string }[] = json?.data?.items ?? [];
+  const target = normFacility(name);
+  const hits = items.filter((it) => normFacility(it.name ?? "") === target);
+  return hits.length === 1 ? hits[0].id : null;
 }
 
 async function findDoctorByName(base: string, token: string, name: string): Promise<string | null> {

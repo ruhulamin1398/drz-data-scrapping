@@ -11,7 +11,9 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "doctor + departmentIds + sourceUrl required" }, { status: 400 });
     }
     const r = await pushDoctor({ ...b.doctor, departmentIds: b.departmentIds, sourceUrl: b.sourceUrl, drxId: b.drxId });
-    return NextResponse.json(r.updated ? { drxId: r.drxId, updated: true, degrees: r.degrees } : { drxId: r.drxId, degrees: r.degrees });
+    return NextResponse.json(r.updated
+      ? { drxId: r.drxId, updated: true, degrees: r.degrees, chambers: r.chambers }
+      : { drxId: r.drxId, degrees: r.degrees, chambers: r.chambers });
   } catch (e: unknown) {
     const msg = e instanceof Error ? e.message : String(e);
     const code = msg.includes("missing") || msg.includes("required") ? 400 : 502;
