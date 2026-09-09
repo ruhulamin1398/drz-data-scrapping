@@ -76,7 +76,7 @@ Field rules:
 - gender: "male" if the bio uses He/His, "female" if She/Her, else "".
 - website: the doctor's own external website URL if linked (personal domain). "" if absent. Never a doctorbangladesh.com, google, or tel: link.
 - degrees: split the qualification line on commas, one object per degree. title = degree abbreviation ("MBBS", "MD", "DA", "MCPS", "M.Phil", "FCPS", "D-CARD", "BCS"). subject = inner-parenthesis specialty ("Cardiology" in "MD (Cardiology)", "Anesthesiology" in "MCPS (Anesthesiology)", else ""). institution = awarding body in parentheses ("DMC", "DU", "BSMMU", "BMU", "UK", "USA") or a named college, else "". country = only when explicitly stated (e.g. "MCCP (USA)" -> country "USA"), else "". Strip prefixes like "BCS (Health)" -> title "BCS", subject "Health".
-- workingIn: STRICTLY lowercase "designation, ${deptSlug}, institution" — designation lowercase, middle segment EXACTLY "${deptSlug}", institution = workplace/college line as written (keep its commas). Example: "assistant professor, ${deptSlug}, sylhet mag osmani medical college hospital". REQUIRED — never empty.
+- workingIn: STRICTLY lowercase "designation, ${deptSlug}, institution" with EXACTLY two commas total — never write a comma inside the designation or institution (replace with a space, e.g. "sylhet mag osmani medical college hospital sylhet"). Middle segment EXACTLY "${deptSlug}". Example: "assistant professor, ${deptSlug}, sylhet mag osmani medical college hospital". REQUIRED — never empty.
 - phones: every Appointment/serial/Call-Now number exactly as written with country code (e.g. "+8801601655913"). Dedupe. [] if none. Never chamber landlines without codes altered — copy verbatim.
 - email: "" unless an email address is literally shown.
 - biography: always "" (the paragraph goes to extraInformation).
@@ -193,13 +193,18 @@ function looksJson(s: string): boolean {
 }
 
 // Backend rejects malformed optionals outright — sanitize instead of failing the row.
-// Backend wants exactly "designation, dept, institution" but institutions contain
-// commas ("... Hospital, Sylhet") — rejoin extras into the institution segment,
-// coerce the middle segment to our dept slug, lowercase everything.
+// Backend wants exactly "designation, dept, institution" where NO segment may
+// contain a comma (regex ^[^,]+,\s*[^,]+,\s*[^,]+$). Institutions do contain them
+// ("... Hospital, Sylhet") — flatten extras to spaces, coerce the middle segment
+// to our dept slug, lowercase everything.
 function normalizeWorkingIn(s: string, deptSlug: string): string | null {
-  const segs = s.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean);
+  const flat = (x: string) => x.replace(/,/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+  const segs = s.split(",").map((x) => x.trim()).filter(Boolean);
   if (segs.length < 3 || !segs[0] || !segs[2]) return null;
-  return `${segs[0]}, ${deptSlug}, ${segs.slice(2).join(", ")}`;
+  const desig = flat(segs[0]);
+  const inst = flat(segs.slice(2).join(" "));
+  if (!desig || !inst) return null;
+  return `${desig}, ${deptSlug}, ${inst}`;
 }
 
 export function chamberText(chambers: DoctorChamber[]): string {
