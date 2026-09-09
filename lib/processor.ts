@@ -3,6 +3,7 @@ import { after } from "next/server";
 import { db } from "./db";
 import { fetchSource, extractInfo, pushDrx } from "./scrape";
 import { parseExtracted } from "./parse";
+import { fetchDoctorProfile, extractDoctor, deptTitle, pushDoctor } from "./doctor";
 
 export type QRow = {
   id: number; title: string; source_url: string;
@@ -16,6 +17,13 @@ export type QRow = {
 export type TickResult = {
   status: "paused" | "started" | "already-running";
   toppedUp: number; active: number; remaining: number;
+  dtoppedUp: number; dactive: number; dremaining: number;
+};
+
+export type DocRow = {
+  id: number; source_url: string; name: string | null;
+  specialty_slug: string; specialty_slugs: string[]; department_ids: string[];
+  card_text: string | null; status: string; drx_id: string | null;
 };
 
 export type PipelineStats = {
@@ -72,7 +80,63 @@ async function getSettings(pool: Pool) {
   } | undefined;
 }
 
-// Atomically claim up to n pending rows (SKIP LOCKED = overlapping ticks never collide).
+// Doctor items are slow (~60-90s: jina + big-model extract + multi-push) and do not
+// survive Vercel's fire-and-forget after() window — a Vercel claim would just lock
+// rows until reconcile frees them. So only the persistent host (Render, where the
+// loop lives as long as the process) owns doctor work. Vercel ticks still report stats.
+const DOCS_ON_SERVER = !process.env.VERCEL;
+
+// Atomically claim up to n pending doctor rows. Server claims stamp locked_at=now();
+// browser-owned rows keep locked_at=NULL so the server loop never touches them.
+async function claimDoctors(pool: Pool, n: number): Promise<DocRow[]> {
+  const c = await pool.connect();
+  try {
+    await c.query("BEGIN");
+    const r = await c.query(
+      `SELECT * FROM doctor_queue WHERE status='pending'
+       ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`,
+      [n]
+    );
+    const rows = r.rows as DocRow[];
+    if (rows.length) {
+      await c.query(
+        `UPDATE doctor_queue SET status='processing', locked_at=now(), updated_at=now()
+         WHERE id = ANY($1)`,
+        [rows.map((x) => x.id)]
+      );
+    }
+    await c.query("COMMIT");
+    return rows;
+  } catch (e) {
+    try { await c.query("ROLLBACK"); } catch { /* ignore */ }
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+
+async function processDoctorItem(pool: Pool, q: DocRow): Promise<boolean> {
+  try {
+    const md = await fetchDoctorProfile(q.source_url);
+    const d = await extractDoctor(md, q.specialty_slug, deptTitle(q.specialty_slug), q.card_text ?? undefined);
+    const r = await pushDoctor({
+      ...d, departmentIds: q.department_ids, sourceUrl: q.source_url,
+      drxId: q.drx_id ?? undefined,
+    });
+    await pool.query(
+      `UPDATE doctor_queue SET status='success', name=$2, drx_id=$3, fail_reason=NULL, updated_at=now() WHERE source_url=$1`,
+      [q.source_url, d.name, r.drxId]
+    );
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await pool.query(
+      `UPDATE doctor_queue SET status='failed', fail_reason=$2, updated_at=now() WHERE source_url=$1`,
+      [q.source_url, msg.slice(0, 300)]
+    ).catch(() => {});
+    return false;
+  }
+}
 async function claim(pool: Pool, n: number): Promise<QRow[]> {
   const c = await pool.connect();
   try {
@@ -153,15 +217,28 @@ async function workerLoop(concurrency: number): Promise<{ succeeded: number; fai
       const s = await getSettings(pool);
       if (!s || !s.enabled) break;
       await pool.query("UPDATE settings SET worker_heartbeat=now() WHERE id=1").catch(() => {});
+      // Server-owned rows only (locked_at NOT NULL) — browser retries own theirs.
       const batch = await pool.query(
         `SELECT * FROM facility_queue
          WHERE status='processing' AND locked_at IS NOT NULL
          ORDER BY id LIMIT $1`,
         [concurrency]
       );
+      const dbatch = DOCS_ON_SERVER
+        ? await pool.query(
+          `SELECT * FROM doctor_queue
+           WHERE status='processing' AND locked_at IS NOT NULL
+           ORDER BY id LIMIT $1`,
+          [concurrency]
+        )
+        : { rows: [] as DocRow[] };
       const rows = batch.rows as QRow[];
-      if (!rows.length) break;
-      const results = await Promise.all(rows.map((q) => processSingleItem(pool, q)));
+      const drows = dbatch.rows as DocRow[];
+      if (!rows.length && !drows.length) break;
+      const results = await Promise.all([
+        ...rows.map((q) => processSingleItem(pool, q)),
+        ...drows.map((q) => processDoctorItem(pool, q)),
+      ]);
       const ok = results.filter(Boolean).length;
       succeeded += ok;
       failed += results.length - ok;
@@ -201,7 +278,7 @@ export async function runProcessor(): Promise<TickResult> {
   const s = await getSettings(pool);
   if (!s || !s.enabled) {
     await logTick(pool, "paused", 0);
-    return { status: "paused", toppedUp: 0, active: 0, remaining: 0 };
+    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0 };
   }
   await pool.query("UPDATE settings SET heartbeat_at=now() WHERE id=1").catch(() => {});
 
@@ -212,17 +289,28 @@ export async function runProcessor(): Promise<TickResult> {
      WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
         OR locked_at < now() - INTERVAL '10 minutes')`
   ).catch(() => {});
+  await pool.query(
+    `UPDATE doctor_queue SET status='pending', locked_at=NULL, updated_at=now()
+     WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
+        OR locked_at < now() - INTERVAL '10 minutes')`
+  ).catch(() => {});
 
   const concurrency = Math.min(Math.max(1, s.concurrency || 1), 10);
   const quota = Math.min(Math.max(1, s.tasks_per_tick || 1), 50);
   const active0 = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='processing'")).rows[0].c);
-  const need = Math.max(0, quota - active0);
+  const dactive0 = Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='processing'")).rows[0].c);
+  // Facilities first (existing behavior), doctors take the remaining quota.
+  const need = Math.max(0, quota - active0 - dactive0);
   const toppedUp = need > 0 ? (await claim(pool, need)).length : 0;
+  const dneed = DOCS_ON_SERVER ? Math.max(0, quota - active0 - dactive0 - toppedUp) : 0;
+  const dtoppedUp = dneed > 0 ? (await claimDoctors(pool, dneed)).length : 0;
   const remaining = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='pending'")).rows[0].c);
+  const dremaining = Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='pending'")).rows[0].c);
 
+  const tick = { toppedUp, active: active0 + toppedUp, remaining, dtoppedUp, dactive: dactive0 + dtoppedUp, dremaining };
   if (loopRunning) {
-    await logTick(pool, "already-running", toppedUp);
-    return { status: "already-running", toppedUp, active: active0 + toppedUp, remaining };
+    await logTick(pool, "already-running", toppedUp + dtoppedUp);
+    return { status: "already-running", ...tick };
   }
   // Atomic cross-instance ownership: only one loop anywhere.
   const own = await pool.query(
@@ -231,11 +319,11 @@ export async function runProcessor(): Promise<TickResult> {
      RETURNING id`
   ).catch(() => null);
   if (!own || !own.rows.length) {
-    await logTick(pool, "already-running", toppedUp);
-    return { status: "already-running", toppedUp, active: active0 + toppedUp, remaining };
+    await logTick(pool, "already-running", toppedUp + dtoppedUp);
+    return { status: "already-running", ...tick };
   }
   loopRunning = true;
   after(() => workerLoop(concurrency));
-  await logTick(pool, "started", toppedUp);
-  return { status: "started", toppedUp, active: active0 + toppedUp, remaining };
+  await logTick(pool, "started", toppedUp + dtoppedUp);
+  return { status: "started", ...tick };
 }

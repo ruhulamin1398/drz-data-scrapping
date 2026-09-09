@@ -24,7 +24,10 @@ export default function Doctors() {
   const [batch, setBatch] = useState(10);
   const [last, setLast] = useState("");
   const [done, setDone] = useState(0);
+  const [active, setActive] = useState<string[]>([]);
+  const [cronOn, setCronOn] = useState(false);
   const stopRef = useRef(false);
+  const busyRetry = busy || active.length > 0;
 
   const tabCount = filter === "all"
     ? counts.pending + counts.processing + counts.success + counts.failed
@@ -48,7 +51,22 @@ export default function Doctors() {
     fetch("/api/doctors/cities").then((r) => r.json()).then((j) => {
       if (j.cities?.length) setCities(j.cities);
     }).catch(() => {});
+    fetch("/api/settings").then((r) => r.json()).then((j) => {
+      if (!j.error) setCronOn(!!j.enabled);
+    }).catch(() => {});
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // While the server cron is enabled this page is a monitor — refresh as it works.
+  useEffect(() => {
+    if (!cronOn) return;
+    const t = setInterval(() => {
+      load();
+      fetch("/api/settings").then((r) => r.json()).then((j) => {
+        if (!j.error) setCronOn(!!j.enabled);
+      }).catch(() => {});
+    }, 10000);
+    return () => clearInterval(t);
+  }, [cronOn, city, specialty, filter, page, perPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function patch(url: string, body: object) {
     await fetch("/api/doctors/queue", {
@@ -58,8 +76,10 @@ export default function Doctors() {
   }
 
   // Browser-driven single-item pipeline: fetch -> extract -> drx -> mark.
-  // Each step is its own short request (serverless-safe); 2 workers in this tab.
+  // Each step is its own short request (serverless-safe); workers run in this tab.
+  // Browser rows keep locked_at=NULL so the server cron loop never touches them.
   async function processOne(q: DRow) {
+    setActive((a) => (a.includes(q.source_url) ? a : [...a, q.source_url]));
     try {
       await patch(q.source_url, { status: "processing", failReason: null });
       const f = await fetch("/api/doctors/fetch", {
@@ -92,6 +112,8 @@ export default function Doctors() {
       const msg = err instanceof Error ? err.message : String(err);
       await patch(q.source_url, { status: "failed", failReason: msg.slice(0, 300) });
       return false;
+    } finally {
+      setActive((a) => a.filter((u) => u !== q.source_url));
     }
   }
 
@@ -127,24 +149,45 @@ export default function Doctors() {
     load();
   }
 
+  // Instant bulk retry: claim failed rows for this tab and run them right away.
   async function retryFailed() {
-    if (busy || counts.failed === 0) return;
+    if (busyRetry || counts.failed === 0) return;
     setBusy(true);
+    stopRef.current = false;
+    setLast("");
+    setDone(0);
     await fetch("/api/doctors/queue", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "retry", statuses: ["failed"] }),
+      body: JSON.stringify({ action: "retry", statuses: ["failed"], toStatus: "processing" }),
     });
+    const r = await fetch("/api/doctors/queue?status=processing&limit=1000");
+    const j = await r.json();
+    const rows: DRow[] = (j.items ?? []).filter((it: DRow) => !active.includes(it.source_url));
+    let cursor = 0, ok = 0, fail = 0;
+    await Promise.all(
+      Array.from({ length: Math.min(2, rows.length) }, async () => {
+        while (true) {
+          if (stopRef.current) return;
+          const i = cursor++;
+          if (i >= rows.length) return;
+          if (await processOne(rows[i])) ok++; else fail++;
+          setDone(ok + fail);
+          load();
+        }
+      })
+    );
     setBusy(false);
-    setLast(`reset ${counts.failed} failed to pending — hit Process to run them`);
+    setLast(stopRef.current ? `stopped: ok ${ok}, failed ${fail}` : `retried: ok ${ok}, failed ${fail}`);
     load();
   }
 
+  // Instant single-row retry: runs here in the browser immediately.
   async function retryOne(url: string) {
     if (busy) return;
-    await fetch("/api/doctors/queue", {
-      method: "PATCH", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, status: "pending", failReason: null }),
-    });
+    const row = rows.find((q) => q.source_url === url);
+    if (!row || active.includes(url)) return;
+    if (row.status !== "failed" && row.status !== "success") return;
+    await processOne({ ...row, drx_id: row.drx_id });
     load();
   }
 
@@ -159,7 +202,7 @@ export default function Doctors() {
     <main className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-xl font-bold text-text-primary">Doctors queue</h1>
       <p className="mt-1 text-sm text-text-secondary">
-        Sylhet pilot — profile → extract → DRX doctor + degrees. Chambers land in extraInformation until the backend adds a doctor link.
+        Sylhet pilot — profile → extract → DRX doctor + degrees + chambers. Enable in Settings and cron processes it; Retry runs instantly here.
       </p>
 
       <div className="mt-4 grid grid-cols-4 gap-2 text-center">
@@ -209,7 +252,7 @@ export default function Doctors() {
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <button onClick={() => load()} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>
-          <button onClick={retryFailed} disabled={busy || counts.failed === 0}
+          <button onClick={retryFailed} disabled={busyRetry || counts.failed === 0}
             className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary disabled:opacity-40">
             Retry failed ({counts.failed})</button>
           {last && <span className="text-text-secondary">{last}</span>}
@@ -238,11 +281,15 @@ export default function Doctors() {
               <span className="rounded-md bg-surface-alt px-2 py-1 text-[11px] text-text-secondary">{q.specialty_slug}</span>
               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>
               {q.drx_id != null && (
-                <span className="rounded-md bg-success/15 px-2 py-1 font-mono text-[11px] font-bold text-success">DRX #{q.drx_id}</span>
+                <span className="rounded-md bg-success/15 px-2 py-1 font-mono text-[11px] font-bold text-success" title={q.drx_id}>
+                  DRX #{q.drx_id.slice(0, 8)}
+                </span>
               )}
               {(q.status === "failed" || q.status === "success") && (
-                <button onClick={() => retryOne(q.source_url)} disabled={busy}
-                  className="rounded-lg border border-border px-2 py-1 text-xs font-medium text-text-secondary hover:border-primary disabled:opacity-40">↻ Retry</button>
+                <button onClick={() => retryOne(q.source_url)} disabled={busy || active.includes(q.source_url)}
+                  className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-text-secondary hover:border-primary disabled:opacity-40">
+                  {active.includes(q.source_url) && <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />}
+                  ↻ Retry</button>
               )}
             </div>
             {q.status === "failed" && q.fail_reason && (

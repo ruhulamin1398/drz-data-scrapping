@@ -55,7 +55,9 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
-// POST /api/doctors/queue { action: "retry", statuses: [...] } — bulk reset to pending.
+// POST /api/doctors/queue { action: "retry", statuses: [...], toStatus? }
+// Bulk reset. toStatus 'processing' claims rows for immediate browser work with
+// locked_at=NULL so the server loop never touches them (it only eats locked rows).
 export async function POST(req: NextRequest) {
   try {
     const b = await req.json();
@@ -65,9 +67,11 @@ export async function POST(req: NextRequest) {
     }
     const statuses = b.statuses.filter((s: string) => allowed.includes(s));
     if (!statuses.length) return NextResponse.json({ error: "no valid statuses" }, { status: 400 });
+    const processing = b.toStatus === "processing";
     const pool = db();
     const r = await pool.query(
-      `UPDATE doctor_queue SET status='pending', fail_reason=NULL, locked_at=NULL, updated_at=now()
+      `UPDATE doctor_queue SET status='${processing ? "processing" : "pending"}',
+        fail_reason=NULL, locked_at=NULL, updated_at=now()
        WHERE status = ANY($1)`,
       [statuses]
     );
