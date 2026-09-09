@@ -18,6 +18,45 @@ export type TickResult = {
   toppedUp: number; active: number; remaining: number;
 };
 
+export type PipelineStats = {
+  enabled: boolean; concurrency: number; tasks_per_tick: number;
+  workerActive: boolean; workerHeartbeat: string | null; heartbeatAt: string | null;
+  facilities: Record<string, number>; doctors: Record<string, number>;
+  lastRun: { status: string; succeeded: number; failed: number; claimed: number; finishedAt: string | null } | null;
+};
+
+// Full snapshot for the cron response (and any monitor): settings + both queue
+// tallies + the most recent cron run. Cheap single-round queries.
+export async function getPipelineStats(): Promise<PipelineStats> {
+  const pool = db();
+  const full = await pool.query("SELECT * FROM settings WHERE id=1").catch(() => null);
+  const f = full?.rows[0] as {
+    enabled: boolean; concurrency: number; tasks_per_tick: number;
+    worker_active: boolean; worker_heartbeat: string | null; heartbeat_at: string | null;
+  } | undefined;
+  const tally = async (table: string) => {
+    const out: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0 };
+    const r = await pool.query(`SELECT status, COUNT(*) c FROM ${table} GROUP BY status`).catch(() => null);
+    for (const row of r?.rows ?? []) out[row.status] = Number(row.c);
+    return out;
+  };
+  const last = await pool.query(
+    `SELECT status, COALESCE(succeeded,0) succeeded, COALESCE(failed,0) failed,
+      COALESCE(claimed,0) claimed, finished_at FROM cron_runs ORDER BY id DESC LIMIT 1`
+  ).catch(() => null);
+  const lr = last?.rows[0];
+  return {
+    enabled: !!f?.enabled, concurrency: f?.concurrency ?? 0, tasks_per_tick: f?.tasks_per_tick ?? 0,
+    workerActive: !!f?.worker_active, workerHeartbeat: f?.worker_heartbeat ?? null,
+    heartbeatAt: f?.heartbeat_at ?? null,
+    facilities: await tally("facility_queue"), doctors: await tally("doctor_queue"),
+    lastRun: lr ? {
+      status: lr.status, succeeded: Number(lr.succeeded), failed: Number(lr.failed),
+      claimed: Number(lr.claimed), finishedAt: lr.finished_at,
+    } : null,
+  };
+}
+
 const LOOP_BUDGET_MS = 45000;
 const OWNER_STALE_MS = 2 * 60 * 1000;
 
