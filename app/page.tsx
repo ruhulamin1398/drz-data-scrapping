@@ -311,6 +311,8 @@ export default function Home() {
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">
                 {q.name || q.title}
               </span>
+              <a href={q.source_url} target="_blank" rel="noopener noreferrer" title="Open scraped source page"
+                className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-primary hover:text-text-primary">↗</a>
               {q.status === "processing" && !showRetry(q) && <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-primary border-t-transparent" />}
               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>
               {q.drx_id != null && (

@@ -233,6 +233,8 @@ export default function Doctors() {
           <div key={q.id} className="rounded-xl border border-border bg-surface px-3 py-2.5">
             <div className="flex items-center gap-2">
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">{q.name}</span>
+              <a href={q.source_url} target="_blank" rel="noopener noreferrer" title="Open scraped source page"
+                className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-primary hover:text-text-primary">↗</a>
               <span className="rounded-md bg-surface-alt px-2 py-1 text-[11px] text-text-secondary">{q.specialty_slug}</span>
               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>
               {q.drx_id != null && (
