@@ -13,12 +13,18 @@ export type ExtractedDoctor = {
   degrees: DoctorDegree[]; workingIn?: string; phones: string[];
   email?: string; biography?: string; chambers: DoctorChamber[];
 };
-export type DrxDoctor = ExtractedDoctor & { departmentIds: string[]; sourceUrl: string; drxId?: number };
+export type DrxDoctor = ExtractedDoctor & { departmentIds: string[]; sourceUrl: string; drxId?: string };
 
 // Step 1: profile pages are small (~2KB) — always fetch full, no trim.
+// Retries once on transient 503 (jina upstream hiccups).
 export async function fetchDoctorProfile(url: string): Promise<string> {
-  const f = await fetchSource(url, true);
-  return f.trimmed;
+  try {
+    return (await fetchSource(url, true)).trimmed;
+  } catch (e) {
+    if (!/503/.test(e instanceof Error ? e.message : String(e))) throw e;
+    await new Promise((r) => setTimeout(r, 2000));
+    return (await fetchSource(url, true)).trimmed;
+  }
 }
 
 // Step 2: fixed-prompt JSON extraction via nex-router (gemini, temperature 0).
@@ -54,11 +60,28 @@ Content:
     throw new Error(`extract failed: ${res.status} ${t.slice(0, 200)}`);
   }
   const data = await res.json();
-  const raw: string = data?.choices?.[0]?.message?.content?.trim() ?? "";
+  let raw: string = data?.choices?.[0]?.message?.content?.trim() ?? "";
+  // Second attempt when the model wraps output in fences or truncates it.
+  if (!looksJson(raw)) {
+    await new Promise((r) => setTimeout(r, 1000));
+    const res2 = await fetch(nexUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt + "\nReturn ONLY the JSON object." }], max_tokens: 2500, temperature: 0.0, stream: false }),
+    });
+    if (!res2.ok) throw new Error(`extract failed: ${res2.status}`);
+    const data2 = await res2.json();
+    raw = data2?.choices?.[0]?.message?.content?.trim() ?? "";
+  }
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error(`extract not JSON: ${raw.slice(0, 150)}`);
-  const d = JSON.parse(raw.slice(start, end + 1)) as Partial<ExtractedDoctor>;
+  let d: Partial<ExtractedDoctor>;
+  try {
+    d = JSON.parse(raw.slice(start, end + 1)) as Partial<ExtractedDoctor>;
+  } catch (e) {
+    throw new Error(`extract bad JSON: ${e instanceof Error ? e.message : String(e)} :: ${raw.slice(Math.max(0, start), start + 200)}`);
+  }
   if (!d.name || !String(d.name).trim() || /<.*>/.test(String(d.name))) throw new Error("name empty from model");
   return {
     name: String(d.name).trim(),
@@ -104,13 +127,23 @@ export function deptTitle(slug: string): string {
   return DEPT_TITLES[slug] ?? slug;
 }
 
+function looksJson(s: string): boolean {
+  const t = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+  return t.startsWith("{") && t.endsWith("}");
+}
+
+// Backend rejects malformed optionals outright — sanitize instead of failing the row.
+function validWorkingIn(s: string): boolean {
+  return /^[^,]+,\s*[^,]+,\s*[^,]+$/.test(s.trim());
+}
+
 export function chamberText(chambers: DoctorChamber[]): string {  return chambers.map((c, i) =>
     `Chamber ${i + 1}: ${c.facilityName}${c.address ? ` | ${c.address}` : ""}${c.serialTime ? ` | ${c.serialTime}` : ""}${c.serialContactNumber ? ` | ${c.serialContactNumber}` : ""}`
   ).join("\n");
 }
 
 // Step 3: POST doctor, then POST each degree with doctorId. Update in place when drxId given.
-export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: number; updated?: boolean; degrees: number }> {
+export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated?: boolean; degrees: number }> {
   const base = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").replace(/\/$/, "");
   const token = process.env.DRX_ADMIN_TOKEN || "";
   if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
@@ -119,11 +152,13 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: number; updated
   const payload = {
     name: d.name, designation: d.designation || undefined,
     specialityArea: d.specialityArea || undefined, departmentIds: d.departmentIds,
-    workingIn: d.workingIn || undefined, phones: d.phones.length ? d.phones : undefined,
-    email: d.email || undefined, biography: d.biography || undefined,
+    workingIn: d.workingIn && validWorkingIn(d.workingIn) ? d.workingIn.toLowerCase() : undefined,
+    phones: d.phones.length ? d.phones : undefined,
+    email: d.email && /@/.test(d.email) ? d.email : undefined,
+    biography: d.biography || undefined,
     extraInformation: extra || undefined,
   };
-  let drxId: number; let updated = false;
+  let drxId: string; let updated = false;
   if (d.drxId) {
     await patchDoctor(base, token, d.drxId, payload);
     drxId = d.drxId; updated = true;
@@ -133,16 +168,17 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: number; updated
       body: JSON.stringify(payload),
     });
     const text = await res.text();
-    let json: { success?: boolean; data?: { id?: number }; error?: { message?: string } } = {};
+    let json: { success?: boolean; data?: { id?: string }; error?: { message?: string; details?: unknown } } = {};
     try { json = JSON.parse(text); } catch { /* keep empty */ }
     if (!res.ok || !json?.data?.id) {
-      const msg = json?.error?.message || text.slice(0, 300) || `drx ${res.status}`;
+      const details = JSON.stringify(json?.error?.details ?? "").slice(0, 200);
+      const msg = [json?.error?.message || text.slice(0, 200) || `drx ${res.status}`, details].filter((x) => x && x !== '""').join(" | ");
       if (/already exists/i.test(msg)) {
         const found = await findDoctorByName(base, token, d.name);
         if (found) { await patchDoctor(base, token, found, payload); drxId = found; updated = true; }
         else throw new Error(msg);
       } else throw new Error(msg);
-    } else drxId = json.data.id as number;
+    } else drxId = json.data.id as string;
   }
   let degrees = 0;
   for (const g of d.degrees) {
@@ -158,18 +194,18 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: number; updated
   return { drxId: drxId!, updated: updated || undefined, degrees };
 }
 
-async function findDoctorByName(base: string, token: string, name: string): Promise<number | null> {
+async function findDoctorByName(base: string, token: string, name: string): Promise<string | null> {
   const res = await fetch(`${base}/api/v1/doctors?search=${encodeURIComponent(name)}&limit=20`, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) return null;
   const json = await res.json().catch(() => null);
-  const items: { id: number; name: string }[] = json?.data?.items ?? [];
+  const items: { id: string; name: string }[] = json?.data?.items ?? [];
   const target = name.trim().toLowerCase();
   return items.find((it) => it.name?.trim().toLowerCase() === target)?.id ?? null;
 }
 
-async function patchDoctor(base: string, token: string, id: number, payload: object): Promise<void> {
+async function patchDoctor(base: string, token: string, id: string, payload: object): Promise<void> {
   const res = await fetch(`${base}/api/v1/doctors/${id}`, {
     method: "PATCH", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
     body: JSON.stringify(payload),
