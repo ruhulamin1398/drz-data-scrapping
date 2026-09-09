@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from "react";
 type DRow = {
   id: number; source_url: string; name: string | null;
   specialty_slug: string; specialty_slugs: string[]; department_ids: string[];
-  status: "pending" | "processing" | "success" | "failed";
+  card_text: string | null;  status: "pending" | "processing" | "success" | "failed";
   drx_id: string | null; fail_reason: string | null;
 };
 
@@ -63,7 +63,7 @@ export default function Doctors() {
 
       const e = await fetch("/api/doctors/extract", {
         method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ markdown: fj.markdown, specialty: q.specialty_slug }),
+        body: JSON.stringify({ markdown: fj.markdown, specialty: q.specialty_slug, card: q.card_text }),
       });
       const ej = await e.json();
       if (!e.ok) throw new Error(ej.error || `extract ${e.status}`);

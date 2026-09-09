@@ -9,7 +9,7 @@ export type DoctorChamber = {
   serialContactNumber?: string; workingDays?: Record<string, string[]>;
 };
 export type ExtractedDoctor = {
-  name: string; designation?: string; specialityArea?: string;
+  name: string; designation?: string; specialityArea?: string; bmdcRegNo?: string;
   degrees: DoctorDegree[]; workingIn?: string; phones: string[];
   email?: string; biography?: string; chambers: DoctorChamber[];
 };
@@ -28,7 +28,9 @@ export async function fetchDoctorProfile(url: string): Promise<string> {
 }
 
 // Step 2: fixed-prompt JSON extraction via nex-router (gemini, temperature 0).
-export async function extractDoctor(md: string, deptSlug: string, deptName: string): Promise<ExtractedDoctor> {
+// name, designation and workingIn are REQUIRED — empty/malformed values throw.
+// cardText is the specialty-page card entry; it sometimes holds the BMDC Reg. No.
+export async function extractDoctor(md: string, deptSlug: string, deptName: string, cardText?: string): Promise<ExtractedDoctor> {
   const nexUrl = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/v1/chat/completions";
   const model = process.env.NEX_MODEL || "gemini";
   if (!md) throw new Error("profile content required");
@@ -36,18 +38,19 @@ export async function extractDoctor(md: string, deptSlug: string, deptName: stri
 `You extract doctor information. Output ONLY a JSON object, no reasoning, no markdown fences, no explanation.
 
 Rules:
-- name: full name WITH title exactly as shown (e.g. "Dr. Md. Sirajur Rahman Sarwar", "Prof. Dr. Shishir Basak").
-- designation: job title only (e.g. "Assistant Professor", "Professor"). Empty string if absent.
+- name: full name WITH title exactly as shown (e.g. "Dr. Md. Sirajur Rahman Sarwar", "Prof. Dr. Shishir Basak"). REQUIRED.
+- designation: job title only (e.g. "Assistant Professor", "Professor"). REQUIRED — never empty; derive from the workplace line if needed.
 - specialityArea: the site's Specialties section as free text (e.g. "Cardiology and Medicine Specialist"). Empty string if absent.
+- bmdcRegNo: BMDC registration number if shown (e.g. "A-36739" from a "BMDC Reg. No:" line). Empty string if absent.
 - degrees: split the degree line on commas. Each item: title (e.g. "MBBS"), subject (text in inner parentheses if any, else ""), institution (text after degree in parentheses like DMC/BSMMU/DU or named college, else ""), country (only if explicitly stated, else "").
-- workingIn: STRICTLY lowercase "designation, ${deptSlug}, institution" (exactly two commas, e.g. "assistant professor, ${deptSlug}, sylhet mag osmani medical college hospital"). Use the workplace/college line as institution. Empty string if no workplace.
+- workingIn: STRICTLY lowercase "designation, ${deptSlug}, institution" (exactly two commas, e.g. "assistant professor, ${deptSlug}, sylhet mag osmani medical college hospital"). Use the workplace/college line as institution. REQUIRED — never empty or malformed.
 - phones: appointment/serial numbers as written (e.g. "+8801601655913"). [] if none.
 - email: "" if absent.
 - biography: the descriptive paragraph about the doctor. "" if absent.
 - chambers: one entry per "Chamber 0N & Appointment" block: facilityName (chamber/hospital name), address (Address line), serialTime (Visiting Hour line as written), serialContactNumber (Appointment number). workingDays: object with ALL 7 keys Sunday..Saturday; each an array of "HH:MM" 24h start/end pairs derived from serialTime (e.g. "3pm to 5pm" -> ["15:00","17:00"]); closed or unknown days -> []. [] if no chamber blocks.
 
 Department context: slug "${deptSlug}", title "${deptName}".
-
+${cardText ? `Card list entry (may contain the BMDC Reg. No):\n` + cardText + `\n` : ""}
 Content:
 ` + md;
   const res = await fetch(nexUrl, {
@@ -83,15 +86,19 @@ Content:
     throw new Error(`extract bad JSON: ${e instanceof Error ? e.message : String(e)} :: ${raw.slice(Math.max(0, start), start + 200)}`);
   }
   if (!d.name || !String(d.name).trim() || /<.*>/.test(String(d.name))) throw new Error("name empty from model");
+  if (!d.designation || !String(d.designation).trim()) throw new Error("designation empty from model");
+  const workingIn = String(d.workingIn ?? "").trim().toLowerCase();
+  if (!validWorkingIn(workingIn)) throw new Error(`workingIn malformed from model: ${workingIn.slice(0, 100)}`);
   return {
     name: String(d.name).trim(),
-    designation: String(d.designation ?? "").trim(),
+    designation: String(d.designation).trim(),
     specialityArea: String(d.specialityArea ?? "").trim(),
+    bmdcRegNo: String(d.bmdcRegNo ?? "").trim(),
     degrees: Array.isArray(d.degrees) ? d.degrees.filter((x) => x && x.title).map((x) => ({
       title: String(x.title).trim(), subject: String(x.subject ?? "").trim(),
       institution: String(x.institution ?? "").trim(), country: String(x.country ?? "").trim(),
     })) : [],
-    workingIn: String(d.workingIn ?? "").trim(),
+    workingIn,
     phones: Array.isArray(d.phones) ? d.phones.map(String).map((s) => s.trim()).filter(Boolean) : [],
     email: String(d.email ?? "").trim(),
     biography: String(d.biography ?? "").trim(),
@@ -151,8 +158,9 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
   const extra = [chamberText(d.chambers), `Source: ${d.sourceUrl}`].filter(Boolean).join("\n");
   const payload = {
     name: d.name, designation: d.designation || undefined,
-    specialityArea: d.specialityArea || undefined, departmentIds: d.departmentIds,
-    workingIn: d.workingIn && validWorkingIn(d.workingIn) ? d.workingIn.toLowerCase() : undefined,
+    specialityArea: d.specialityArea || undefined, bmdcRegNo: d.bmdcRegNo || undefined,
+    departmentIds: d.departmentIds,
+    workingIn: d.workingIn || undefined,
     phones: d.phones.length ? d.phones : undefined,
     email: d.email && /@/.test(d.email) ? d.email : undefined,
     biography: d.biography || undefined,
