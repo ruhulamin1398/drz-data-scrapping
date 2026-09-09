@@ -11,7 +11,8 @@ export type DoctorChamber = {
 export type ExtractedDoctor = {
   name: string; designation?: string; specialityArea?: string; bmdcRegNo?: string;
   degrees: DoctorDegree[]; workingIn?: string; phones: string[];
-  email?: string; biography?: string; extraInformation?: string; chambers: DoctorChamber[];
+  email?: string; biography?: string; extraInformation?: string;
+  gender?: string; website?: string; chambers: DoctorChamber[];
 };
 export type DrxDoctor = ExtractedDoctor & { departmentIds: string[]; sourceUrl: string; drxId?: string };
 
@@ -35,29 +36,62 @@ export async function extractDoctor(md: string, deptSlug: string, deptName: stri
   const model = process.env.NEX_MODEL || "gemini";
   if (!md) throw new Error("profile content required");
   const prompt =
-`You extract doctor information. Output ONLY a JSON object, no reasoning, no markdown fences, no explanation.
+`Role: You are a precise medical-directory data extractor. Input is Jina markdown of one doctor profile page from doctorbangladesh.com (title line, "Chamber 0N & Appointment" blocks, then a descriptive paragraph), plus the doctor's card entry from the specialty list page. Page-top nav/search boilerplate and any Bengali ticket-booking notice ("টিকিট নেয়ার নিয়ম") are noise — ignore them, except a personal website link which goes to "website".
 
-Rules:
-- name: full name WITH title exactly as shown (e.g. "Dr. Md. Sirajur Rahman Sarwar", "Prof. Dr. Shishir Basak"). REQUIRED.
-- designation: job title only (e.g. "Assistant Professor", "Professor"). REQUIRED — never empty; derive from the workplace line if needed.
-- specialityArea: the site's Specialties section as free text (e.g. "Cardiology and Medicine Specialist"). Empty string if absent.
-- bmdcRegNo: BMDC registration number if shown (e.g. "A-36739" from a "BMDC Reg. No:" line). Empty string if absent.
-- degrees: split the degree line on commas. Each item: title (e.g. "MBBS"), subject (text in inner parentheses if any, else ""), institution (text after degree in parentheses like DMC/BSMMU/DU or named college, else ""), country (only if explicitly stated, else "").
-- workingIn: STRICTLY lowercase "designation, ${deptSlug}, institution" (exactly two commas, e.g. "assistant professor, ${deptSlug}, sylhet mag osmani medical college hospital"). Use the workplace/college line as institution. REQUIRED — never empty or malformed.
-- phones: appointment/serial numbers as written (e.g. "+8801601655913"). [] if none.
-- email: "" if absent.
-- biography: always empty string (do not output anything here).
-- extraInformation: the full descriptive paragraph about the doctor (About text). Empty string if absent.
-- chambers: one entry per "Chamber 0N & Appointment" block: facilityName (chamber/hospital name), address (Address line), serialTime (Visiting Hour line as written), serialContactNumber (Appointment number). workingDays: object with ALL 7 keys Sunday..Saturday; each an array of "HH:MM" 24h start/end pairs derived from serialTime (e.g. "3pm to 5pm" -> ["15:00","17:00"]); closed or unknown days -> []. [] if no chamber blocks.
+Output contract: respond with ONLY one JSON object matching the schema below. No reasoning, no markdown fences, no commentary, no trailing text. Missing values become "" (strings) or [] (arrays) — never null, never placeholders like "N/A", "<...>", "unknown".
+
+Schema with a full example:
+{
+  "name": "Prof. Dr. Shishir Basak",
+  "designation": "Professor",
+  "specialityArea": "Cardiology Specialist",
+  "bmdcRegNo": "",
+  "gender": "male",
+  "website": "https://drshishirbasak.com/",
+  "degrees": [
+    { "title": "MBBS", "subject": "", "institution": "DMC", "country": "" },
+    { "title": "MD", "subject": "Cardiology", "institution": "", "country": "" }
+  ],
+  "workingIn": "professor, ${deptSlug}, parkview medical college & hospital, sylhet",
+  "phones": ["+8801726450182"],
+  "email": "",
+  "biography": "",
+  "extraInformation": "Prof. Dr. Shishir Basak is a Cardiologist in Sylhet. His qualification is ...",
+  "chambers": [
+    {
+      "facilityName": "Mount Adora Hospital, Akhalia, Sylhet",
+      "address": "Sylhet-Sunamganj Highway, Akhalia, Sylhet - 3100",
+      "serialTime": "5pm to 10pm (Closed: Sat & Friday)",
+      "serialContactNumber": "+8801726450182",
+      "workingDays": { "Sunday": ["17:00","22:00"], "Monday": ["17:00","22:00"], "Tuesday": ["17:00","22:00"], "Wednesday": ["17:00","22:00"], "Thursday": ["17:00","22:00"], "Friday": [], "Saturday": [] }
+    }
+  ]
+}
+
+Field rules:
+- name: full name WITH title exactly as shown in the Title line (e.g. "Dr. Md. Sirajur Rahman Sarwar", "Prof. Dr. Shishir Basak"). REQUIRED — never empty.
+- designation: job title only, Title Case (e.g. "Assistant Professor", "Professor", "Consultant", "Associate Professor of Oncology"). REQUIRED — never empty; if no explicit title, derive it from the workplace line ("... serves as X at ..." / "He is a Consultant ..."); last resort: "General Practitioner".
+- specialityArea: the "X Specialist" line from card or profile (e.g. "Cardiology and Medicine Specialist", "Anesthesiology, Pain Management & Critical Care Medicine Specialist"). Fallback: "${deptName} Specialist". "" only if nothing found.
+- bmdcRegNo: digits/letter code from a "BMDC Reg. No:" line, usually only in the card entry (e.g. "A-36739"). "" if absent.
+- gender: "male" if the bio uses He/His, "female" if She/Her, else "".
+- website: the doctor's own external website URL if linked (personal domain). "" if absent. Never a doctorbangladesh.com, google, or tel: link.
+- degrees: split the qualification line on commas, one object per degree. title = degree abbreviation ("MBBS", "MD", "DA", "MCPS", "M.Phil", "FCPS", "D-CARD", "BCS"). subject = inner-parenthesis specialty ("Cardiology" in "MD (Cardiology)", "Anesthesiology" in "MCPS (Anesthesiology)", else ""). institution = awarding body in parentheses ("DMC", "DU", "BSMMU", "BMU", "UK", "USA") or a named college, else "". country = only when explicitly stated (e.g. "MCCP (USA)" -> country "USA"), else "". Strip prefixes like "BCS (Health)" -> title "BCS", subject "Health".
+- workingIn: STRICTLY lowercase "designation, ${deptSlug}, institution" — designation lowercase, middle segment EXACTLY "${deptSlug}", institution = workplace/college line as written (keep its commas). Example: "assistant professor, ${deptSlug}, sylhet mag osmani medical college hospital". REQUIRED — never empty.
+- phones: every Appointment/serial/Call-Now number exactly as written with country code (e.g. "+8801601655913"). Dedupe. [] if none. Never chamber landlines without codes altered — copy verbatim.
+- email: "" unless an email address is literally shown.
+- biography: always "" (the paragraph goes to extraInformation).
+- extraInformation: the FULL descriptive paragraph about the doctor, copied completely, never summarized. "" if absent.
+- chambers: one entry per "Chamber 0N & Appointment" block, in order. facilityName = bold chamber/hospital name WITHOUT markdown links. address = Address line text only. serialTime = Visiting Hour line copied VERBATIM (e.g. "5pm to 10pm (Closed: Sat & Friday)"). serialContactNumber = Appointment number verbatim, "" if none.
+- workingDays: ALL 7 keys Sunday..Saturday, each an array of ["start","end"] in 24h "HH:MM" converted from serialTime. Convert: 3pm->15:00, 5pm->17:00, 10pm->22:00, 10am->10:00, 8pm->20:00, "10:30am"->"10:30", "7:30pm"->"19:30". Closed-day words map: Friday/Fri, Saturday/Sat, Thursday/Thu, Sunday/Sun, Monday/Mon, Tuesday/Tue, Wednesday/Wed. "(Closed: Friday)" empties Friday only; "(Closed: Sat & Friday)" empties both; "(Closed: Thu & Friday)" empties both; "(Closed: Friday)" keeps Saturday. Days with no hours mentioned -> []. Values are ARRAYS OF STRINGS ONLY — never booleans, never null. [] (no chamber blocks at all) -> "chambers": [].
 
 Department context: slug "${deptSlug}", title "${deptName}".
-${cardText ? `Card list entry (may contain the BMDC Reg. No):\n` + cardText + `\n` : ""}
+${cardText ? `Card list entry (degrees line, may contain the BMDC Reg. No):\n` + cardText + `\n` : ""}
 Content:
 ` + md;
   const res = await fetch(nexUrl, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 2500, temperature: 0.0, stream: false }),
+    body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 3000, temperature: 0.0, stream: false }),
   });
   if (!res.ok) {
     const t = await res.text().catch(() => "");
@@ -71,7 +105,7 @@ Content:
     const res2 = await fetch(nexUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt + "\nReturn ONLY the JSON object." }], max_tokens: 2500, temperature: 0.0, stream: false }),
+      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt + "\nReturn ONLY the JSON object." }], max_tokens: 3000, temperature: 0.0, stream: false }),
     });
     if (!res2.ok) throw new Error(`extract failed: ${res2.status}`);
     const data2 = await res2.json();
@@ -103,6 +137,8 @@ Content:
     email: String(d.email ?? "").trim(),
     biography: "",
     extraInformation: String(d.extraInformation ?? "").trim(),
+    gender: d.gender === "male" || d.gender === "female" ? d.gender : "",
+    website: validWebsite(d.website),
     chambers: Array.isArray(d.chambers) ? d.chambers.filter((x) => x && x.facilityName).map((x) => ({
       facilityName: String(x.facilityName).trim(), address: String(x.address ?? "").trim(),
       serialTime: String(x.serialTime ?? "").trim(), serialContactNumber: String(x.serialContactNumber ?? "").trim(),
@@ -144,6 +180,13 @@ function tryParse(s: string): Partial<ExtractedDoctor> | null {
   }
 }
 
+function validWebsite(w: unknown): string {
+  const s = String(w ?? "").trim();
+  if (!/^https?:\/\//i.test(s)) return "";
+  if (/doctorbangladesh\.com|google\.com|tel:/i.test(s)) return "";
+  return s;
+}
+
 function looksJson(s: string): boolean {
   const t = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
   return t.startsWith("{") && t.endsWith("}");
@@ -180,6 +223,7 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
     workingIn: d.workingIn || undefined,
     phones: d.phones.length ? d.phones : undefined,
     email: d.email && /@/.test(d.email) ? d.email : undefined,
+    gender: d.gender || undefined, website: d.website || undefined,
     extraInformation: extra || undefined,
   };
   let drxId: string; let updated = false;
