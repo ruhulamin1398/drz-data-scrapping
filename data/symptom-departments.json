@@ -1,0 +1,26 @@
+{
+  "note": "DRAFT for review: symptom title -> department slugs (must match /api/v1/departments). Grounded in doctime specialty descriptions + standard groupings. Backend has no symptom-department link field yet — this file is the approval artifact; a push script comes after the field exists.",
+  "mappings": [
+    { "symptom": "Kidney Problems", "departments": ["nephrologist", "urologist", "pediatric-nephrologist", "pediatric-urologist"] },
+    { "symptom": "Eye Problems", "departments": ["ophthalmologist", "neuro-ophthalmologist", "pediatric-ophthalmologist"] },
+    { "symptom": "Sexual Problems", "departments": ["sexologist", "gynecologist", "urologist", "endocrinologist"] },
+    { "symptom": "Blood Pressure", "departments": ["cardiologist", "medicine-specialist", "nephrologist"] },
+    { "symptom": "Uncontrolled Diabetes", "departments": ["diabetologist", "endocrinologist", "medicine-specialist", "nutritionist"] },
+    { "symptom": "Abdominal / Body Pain", "departments": ["gastroenterologist", "medicine-specialist", "general-surgeon"] },
+    { "symptom": "Joint / Muscle Pain / Arthritis", "departments": ["rheumatologist", "orthopedic-specialist", "physical-medicine-specialist", "physiotherapist", "spine-surgeon"] },
+    { "symptom": "Anorexia", "departments": ["psychiatrist", "psychologist", "gastroenterologist"] },
+    { "symptom": "Stress or Depression", "departments": ["psychiatrist", "psychologist"] },
+    { "symptom": "Ear / Nose / Throat Diseases", "departments": ["otolaryngologist"] },
+    { "symptom": "Acidity / Indigestion / Diarrhea", "departments": ["gastroenterologist", "pediatric-gastroenterologist", "medicine-specialist"] },
+    { "symptom": "Urine Infection / Problems", "departments": ["urologist", "nephrologist", "pediatric-urologist", "pediatric-nephrologist"] },
+    { "symptom": "Hair Fall / Dandruff", "departments": ["dermatologist"] },
+    { "symptom": "Itching / Acne / Skin Problems", "departments": ["dermatologist"] },
+    { "symptom": "Weight Loss / Gain / Diet", "departments": ["nutritionist", "endocrinologist", "diabetologist", "medicine-specialist"] },
+    { "symptom": "Child Diseases", "departments": ["pediatrician", "pediatric-cardiologist", "pediatric-gastroenterologist", "pediatric-hematologist", "pediatric-nephrologist", "pediatric-neurologist", "pediatric-neurosurgeon", "pediatric-ophthalmologist", "pediatric-orthopedic-surgeon", "pediatric-surgeon", "pediatric-urologist", "best-child-psychiatrist"] },
+    { "symptom": "Fever / Cold / Flu / Allergy", "departments": ["medicine-specialist", "pediatrician", "otolaryngologist", "chest-specialist"] },
+    { "symptom": "Chest Pain / Heart Problems", "departments": ["cardiologist", "cardiac-surgeon", "pediatric-cardiologist"] },
+    { "symptom": "Breathlessness / Cough / Asthma", "departments": ["chest-specialist", "cardiologist", "pediatrician", "otolaryngologist"] },
+    { "symptom": "Headache or Migraine", "departments": ["neurologist", "medicine-specialist", "pediatric-neurologist", "neurosurgeon", "ophthalmologist"] },
+    { "symptom": "Integration Fever Updated", "departments": [], "note": "Looks like a test/junk record — recommend deleting from backend instead of mapping" }
+  ]
+}
