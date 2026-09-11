@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { db } from "./db";
 import { fetchSource, extractInfo, pushDrx } from "./scrape";
 import { parseExtracted } from "./parse";
-import { fetchDoctorProfile, extractDoctor, deptTitle, pushDoctor } from "./doctor";
+import { fetchDoctorProfile, fetchDoctorPhoto, extractDoctor, deptTitle, pushDoctor } from "./doctor";
 
 export type QRow = {
   id: number; title: string; source_url: string;
@@ -24,6 +24,7 @@ export type DocRow = {
   id: number; source_url: string; name: string | null;
   specialty_slug: string; specialty_slugs: string[]; department_ids: string[];
   card_text: string | null; status: string; drx_id: string | null;
+  structure_md: string | null;
 };
 
 export type PipelineStats = {
@@ -117,11 +118,21 @@ async function claimDoctors(pool: Pool, n: number): Promise<DocRow[]> {
 
 async function processDoctorItem(pool: Pool, q: DocRow): Promise<boolean> {
   try {
-    const md = await fetchDoctorProfile(q.source_url);
+    // Reuse stored Jina markdown when present — saves a Jina call (rate limits).
+    // Otherwise fetch fresh and store it for next time (retries reuse it too).
+    let md = q.structure_md;
+    if (!md) {
+      md = await fetchDoctorProfile(q.source_url);
+      await pool.query(
+        `UPDATE doctor_queue SET structure_md=$2, updated_at=now() WHERE source_url=$1`,
+        [q.source_url, md]
+      ).catch(() => {});
+    }
     const d = await extractDoctor(md, q.specialty_slug, deptTitle(q.specialty_slug), q.card_text ?? undefined);
+    const photo = await fetchDoctorPhoto(q.source_url);
     const r = await pushDoctor({
       ...d, departmentIds: q.department_ids, sourceUrl: q.source_url,
-      drxId: q.drx_id ?? undefined,
+      drxId: q.drx_id ?? undefined, photo: photo || d.photo,
     });
     await pool.query(
       `UPDATE doctor_queue SET status='success', name=$2, drx_id=$3, fail_reason=NULL, updated_at=now() WHERE source_url=$1`,

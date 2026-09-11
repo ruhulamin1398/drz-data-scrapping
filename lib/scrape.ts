@@ -1,20 +1,14 @@
 import { locationBlock } from "./locations";
+import { jinaFetch } from "./jina";
 
 const TRIM_LINES = 30;
 
 // Step 1: fetch a facility page through jina.ai. full=true returns everything,
 // otherwise only the first TRIM_LINES lines (drops the doctor-list noise).
+// Keys come from /settings (settings.jina_keys) with env fallback + rotation.
 export async function fetchSource(url: string, full: boolean): Promise<{ totalLines: number; trimmed: string; full: boolean }> {
-  const jinaKey = process.env.JINA_API_KEY || "";
   if (!url) throw new Error("url required");
-  if (!jinaKey) throw new Error("JINA_API_KEY missing in .env.local");
-  const target = url.startsWith("https://r.jina.ai/") ? url : `https://r.jina.ai/${url}`;
-  const res = await fetch(target, { headers: { Authorization: `Bearer ${jinaKey}` } });
-  if (!res.ok) {
-    const t = await res.text().catch(() => "");
-    throw new Error(`fetch failed: ${res.status} ${t.slice(0, 200)}`);
-  }
-  const raw = await res.text();
+  const raw = await jinaFetch(url);
   const lines = raw.split("\n");
   return { totalLines: lines.length, trimmed: full ? raw : lines.slice(0, TRIM_LINES).join("\n"), full };
 }

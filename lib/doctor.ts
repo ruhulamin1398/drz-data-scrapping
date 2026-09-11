@@ -13,7 +13,7 @@ export type ExtractedDoctor = {
   name: string; designation?: string; specialityArea?: string; bmdcRegNo?: string;
   degrees: DoctorDegree[]; workingIn?: string; phones: string[];
   email?: string; biography?: string; extraInformation?: string;
-  gender?: string; website?: string; chambers: DoctorChamber[];
+  gender?: string; website?: string; photo?: string; chambers: DoctorChamber[];
 };
 export type DrxDoctor = ExtractedDoctor & { departmentIds: string[]; sourceUrl: string; drxId?: string };
 
@@ -26,6 +26,29 @@ export async function fetchDoctorProfile(url: string): Promise<string> {
     if (!/503/.test(e instanceof Error ? e.message : String(e))) throw e;
     await new Promise((r) => setTimeout(r, 2000));
     return (await fetchSource(url, true)).trimmed;
+  }
+}
+
+// Step 1b: profile photo via og:image from raw HTML (cheap, no Jina cost).
+// Returns "" when absent or when it looks like a site asset (logo/icon/placeholder).
+export async function fetchDoctorPhoto(url: string): Promise<string> {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), 20000);
+    const res = await fetch(url, {
+      signal: ctrl.signal,
+      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" },
+    });
+    clearTimeout(t);
+    if (!res.ok) return "";
+    const html = await res.text();
+    const m = /<meta\s+property="og:image"\s+content="([^"]+)"/i.exec(html);
+    const img = (m?.[1] ?? "").trim();
+    if (!img || !/^https?:\/\//i.test(img)) return "";
+    if (/logo|icon|placeholder|default|banner|favicon/i.test(img)) return "";
+    return img;
+  } catch {
+    return "";
   }
 }
 
@@ -120,6 +143,7 @@ Content:
     extraInformation: String(d.extraInformation ?? "").trim(),
     gender: d.gender === "male" || d.gender === "female" ? d.gender : "",
     website: validWebsite(d.website),
+    photo: validPhoto(d.photo),
     chambers: Array.isArray(d.chambers) ? d.chambers.filter((x) => x && x.facilityName).map((x) => ({
       facilityName: String(x.facilityName).trim(), address: String(x.address ?? "").trim(),
       serialTime: String(x.serialTime ?? "").trim(), serialContactNumber: String(x.serialContactNumber ?? "").trim(),
@@ -181,6 +205,13 @@ function validWebsite(w: unknown): string {
   return s;
 }
 
+function validPhoto(p: unknown): string {
+  const s = String(p ?? "").trim();
+  if (!/^https?:\/\//i.test(s)) return "";
+  if (/logo|icon|placeholder|default|banner|favicon/i.test(s)) return "";
+  return s;
+}
+
 function looksJson(s: string): boolean {
   const t = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
   return t.startsWith("{") && t.endsWith("}");
@@ -223,6 +254,9 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
     phones: d.phones.length ? d.phones : undefined,
     email: d.email && /@/.test(d.email) ? d.email : undefined,
     gender: d.gender || undefined, website: d.website || undefined,
+    // Plain `photo` URL (saved as-is). `photoUrl` (server-side download) 500s
+    // on the backend as of 2026-09-11 — switch when backend fixes it.
+    photo: d.photo || undefined,
     extraInformation: extra || undefined,
   };
   let drxId: string; let updated = false;

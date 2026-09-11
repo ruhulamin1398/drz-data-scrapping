@@ -17,11 +17,25 @@ const hub = process.argv[3];
 if (!city || !hub) throw new Error("usage: node scripts/harvest-doctors-city.mjs <city> <hub-slug>");
 const cityName = city.charAt(0).toUpperCase() + city.slice(1);
 
-const jinaKey = process.env.JINA_API_KEY || "";
 const base = (process.env.DRX_API_BASE || "").replace(/\/$/, "");
 const token = process.env.DRX_ADMIN_TOKEN || "";
-if (!jinaKey || !base || !token) throw new Error("JINA_API_KEY / DRX_API_BASE / DRX_ADMIN_TOKEN required");
+if (!base || !token) throw new Error("DRX_API_BASE / DRX_ADMIN_TOKEN required");
 const H = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
+
+// Jina keys from /settings (settings.jina_keys, one per line), env fallback.
+// Rotates on 429 (per-minute limit), skips 401/402 (invalid/balance) keys.
+const keyClient = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+await keyClient.connect();
+let jinaKeys = [];
+try {
+  const r = await keyClient.query("SELECT jina_keys FROM settings WHERE id=1");
+  jinaKeys = String(r.rows[0]?.jina_keys ?? "").split("\n").map((s) => s.trim()).filter((s) => s.length > 10);
+} catch { /* pre-migration: env only */ }
+await keyClient.end().catch(() => {});
+if (process.env.JINA_API_KEY && !jinaKeys.includes(process.env.JINA_API_KEY.trim())) jinaKeys.push(process.env.JINA_API_KEY.trim());
+if (!jinaKeys.length) throw new Error("no Jina keys: add keys on /settings or set JINA_API_KEY");
+let jinaIdx = 0;
+const jinaCooldown = new Map();
 
 async function jina(url) {
   const key = "/tmp/jina-cache-" + Buffer.from(url).toString("base64url") + ".txt";
@@ -29,11 +43,23 @@ async function jina(url) {
     const hit = fs.readFileSync(key, "utf8");
     if (hit.length > 500) return hit;
   } catch { /* miss */ }
-  const res = await fetch(`https://r.jina.ai/${url}`, { headers: { Authorization: `Bearer ${jinaKey}` } });
-  if (!res.ok) throw new Error(`jina ${res.status} for ${url}`);
-  const text = await res.text();
-  try { fs.writeFileSync(key, text); } catch { /* ignore */ }
-  return text;
+  let lastErr = "";
+  for (let i = 0; i < jinaKeys.length; i++) {
+    const k = jinaKeys[(jinaIdx + i) % jinaKeys.length];
+    if ((jinaCooldown.get(k) ?? 0) > Date.now()) continue;
+    const res = await fetch(`https://r.jina.ai/${url}`, { headers: { Authorization: `Bearer ${k}` } });
+    if (res.ok) {
+      jinaIdx = (jinaKeys.indexOf(k) + 1) % jinaKeys.length;
+      const text = await res.text();
+      try { fs.writeFileSync(key, text); } catch { /* ignore */ }
+      return text;
+    }
+    lastErr = `jina ${res.status} for ${url}`;
+    if (res.status === 429) { jinaCooldown.set(k, Date.now() + 65000); continue; }
+    if (res.status === 401 || res.status === 402) continue;
+    throw new Error(lastErr);
+  }
+  throw new Error(lastErr || "all Jina keys cooling down");
 }
 
 async function dbRetry(fn, tries = 4) {

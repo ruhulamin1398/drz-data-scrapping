@@ -2,11 +2,16 @@
 
 import { useEffect, useState } from "react";
 
-type Settings = { enabled: boolean; concurrency: number; tasks_per_tick: number; heartbeat_at: string | null };
+type Settings = {
+  enabled: boolean; concurrency: number; tasks_per_tick: number; heartbeat_at: string | null;
+  jina_keys_count?: number; jina_keys_masked?: string[];
+};
 
 export default function SettingsPage() {
   const [s, setS] = useState<Settings>({ enabled: false, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
   const [saved, setSaved] = useState(false);
+  const [keysText, setKeysText] = useState("");
+  const [keysTouched, setKeysTouched] = useState(false);
 
   async function load() {
     try {
@@ -23,7 +28,7 @@ export default function SettingsPage() {
     return () => clearInterval(t);
   }, [s.enabled]);
 
-  async function update(patch: Partial<Settings>) {
+  async function update(patch: Partial<Settings> & { jina_keys?: string }) {
     const r = await fetch("/api/settings", {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify(patch),
@@ -87,6 +92,30 @@ export default function SettingsPage() {
         <p className="font-semibold text-text-primary">Cron endpoint</p>
         <p className="mt-1 font-mono text-xs text-text-secondary">POST /api/cron — header <span className="text-text-primary">x-cron-secret</span>, every 1 min via cron-job.org</p>
         <p className="mt-1 text-xs text-text-secondary">Tick history lives under <span className="font-semibold text-text-primary">History</span> in the sidebar.</p>
+      </div>
+
+      {/* jina keys */}
+      <div className="mt-3 rounded-2xl border border-border bg-surface p-4 text-sm shadow-sm">
+        <p className="font-semibold text-text-primary">
+          Jina API keys {s.jina_keys_count != null && <span className="ml-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">{s.jina_keys_count} active</span>}
+        </p>
+        <p className="mt-0.5 text-xs text-text-secondary">One per line. Rotation is automatic: 429 rate-limit moves to the next key, dead keys are skipped. Used by every fetch instead of env.</p>
+        {s.jina_keys_masked && s.jina_keys_masked.length > 0 && (
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {s.jina_keys_masked.map((k) => (
+              <span key={k} className="rounded-full bg-surface-alt px-2.5 py-1 font-mono text-[11px] text-text-secondary">{k}</span>
+            ))}
+          </div>
+        )}
+        <textarea rows={3} placeholder="jina_... (one key per line) — paste to replace all"
+          value={keysTouched ? keysText : ""}
+          onChange={(e) => { setKeysText(e.target.value); setKeysTouched(true); }}
+          className="mt-2 w-full rounded-xl border border-border bg-surface-alt px-3 py-2 font-mono text-xs text-text-primary outline-none focus:border-primary" />
+        <button disabled={!keysTouched || !keysText.trim()}
+          onClick={() => { update({ jina_keys: keysText }); setKeysText(""); setKeysTouched(false); }}
+          className="mt-2 rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-white disabled:opacity-40">
+          Save keys
+        </button>
       </div>
     </main>
   );
