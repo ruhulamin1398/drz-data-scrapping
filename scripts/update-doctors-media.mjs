@@ -1,11 +1,10 @@
-// Update task (not create): one by one over success rows with drx_id.
-// Per doctor (raw HTML parsed once, no AI):
-//   1. Jina markdown -> saved to structure_md (reused, never re-fetch later)
-//   2. photo: og:image -> body wp-post-image fallback (placeholders dr-male/
+// Update task (not create): concurrent workers over success rows with drx_id.
+// Per doctor, from raw profile HTML only (no Jina, no AI):
+//   1. photo: og:image -> body wp-post-image fallback (placeholders dr-male/
 //      dr-female excluded; PATCH null clears a previously-set placeholder)
-//   3. experienced_year: structured <li class="experience" title="Experiences">
+//   2. experienced_year: structured <li class="experience" title="Experiences">
 //      ("15+ Years of Experience") — empty element means no data, skip honestly
-// Usage: node scripts/update-doctors-media.mjs
+// Usage: CONC=5 node scripts/update-doctors-media.mjs (MAX=n for trial slice)
 // Resume-safe: completed ids in /tmp/media-update-done.json
 import fs from "fs";
 import pg from "pg";
@@ -20,26 +19,11 @@ const BASE = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").repl
 const TOKEN = process.env.DRX_ADMIN_TOKEN || "";
 if (!TOKEN) throw new Error("DRX_ADMIN_TOKEN required");
 
-// Single Jina key from /settings, env fallback.
-let jinaKey = "";
-try {
-  const r = await pool.query("SELECT jina_keys FROM settings WHERE id=1");
-  jinaKey = String(r.rows[0]?.jina_keys ?? "").split("\n").map((s) => s.trim()).find((s) => s.length > 10) || "";
-} catch { /* pre-migration */ }
-if (!jinaKey) jinaKey = (process.env.JINA_API_KEY || "").trim();
-if (!jinaKey) throw new Error("no Jina key: add one on /settings or set JINA_API_KEY");
-
 const DONE_FILE = "/tmp/media-update-done.json";
 const done = new Set(fs.existsSync(DONE_FILE) ? JSON.parse(fs.readFileSync(DONE_FILE, "utf8")) : []);
 const save = () => fs.writeFileSync(DONE_FILE, JSON.stringify([...done]));
 
 const PLACEHOLDER = /dr-male|dr-female|doctor-bd|logo|icon|placeholder|default|banner|favicon/i;
-
-async function jinaFetch(url) {
-  const res = await fetch(`https://r.jina.ai/${url}`, { headers: { Authorization: `Bearer ${jinaKey}` } });
-  if (!res.ok) throw new Error(`jina ${res.status}`);
-  return res.text();
-}
 
 async function fetchHtml(url) {
   const ctrl = new AbortController();
@@ -100,7 +84,7 @@ async function patchDoctor(drxId, payload) {
 }
 
 const { rows } = await pool.query(
-  "SELECT id, source_url, drx_id, name, structure_md FROM doctor_queue WHERE status='success' AND drx_id IS NOT NULL ORDER BY id"
+  "SELECT id, source_url, drx_id, name FROM doctor_queue WHERE status='success' AND drx_id IS NOT NULL ORDER BY id"
 );
 const max = Number(process.env.MAX || 0);
 const CONC = Math.min(Math.max(1, Number(process.env.CONC || 5)), 10);
@@ -108,16 +92,10 @@ const todo = rows.filter((r) => !done.has(r.id));
 const run = max > 0 ? todo.slice(0, max) : todo;
 console.log(`total: ${rows.length}, done: ${done.size}, todo: ${todo.length}, running: ${run.length}, concurrency: ${CONC}`);
 
-let patched = 0, cleared = 0, mdSaved = 0, yearsSet = 0, failed = 0;
+let patched = 0, cleared = 0, yearsSet = 0, failed = 0;
 async function worker(items) {
   for (const row of items) {
     try {
-      let md = row.structure_md;
-      if (!md) {
-        md = await jinaFetch(row.source_url);
-        await pool.query("UPDATE doctor_queue SET structure_md=$2, updated_at=now() WHERE id=$1", [row.id, md]);
-        mdSaved++;
-      }
       const html = await fetchHtml(row.source_url);
       const payload = {};
       if (html) {
@@ -138,7 +116,7 @@ async function worker(items) {
     done.add(row.id);
     if (done.size % 50 === 0) {
       save();
-      console.log(`progress ${done.size}/${rows.length} patched=${patched} cleared=${cleared} mdSaved=${mdSaved} years=${yearsSet} failed=${failed}`);
+      console.log(`progress ${done.size}/${rows.length} patched=${patched} cleared=${cleared} years=${yearsSet} failed=${failed}`);
     }
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -146,5 +124,5 @@ async function worker(items) {
 const shards = Array.from({ length: CONC }, (_, i) => run.filter((_, j) => j % CONC === i));
 await Promise.all(shards.map(worker));
 save();
-console.log(`FINAL patched=${patched} cleared=${cleared} mdSaved=${mdSaved} years=${yearsSet} failed=${failed}`);
+console.log(`FINAL patched=${patched} cleared=${cleared} years=${yearsSet} failed=${failed}`);
 await pool.end();
