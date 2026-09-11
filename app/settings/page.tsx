@@ -94,27 +94,27 @@ export default function SettingsPage() {
         <p className="mt-1 text-xs text-text-secondary">Tick history lives under <span className="font-semibold text-text-primary">History</span> in the sidebar.</p>
       </div>
 
-      {/* jina keys */}
+      {/* jina key */}
       <div className="mt-3 rounded-2xl border border-border bg-surface p-4 text-sm shadow-sm">
         <p className="font-semibold text-text-primary">
-          Jina API keys {s.jina_keys_count != null && <span className="ml-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] text-primary">{s.jina_keys_count} active</span>}
+          Jina API key {s.jina_keys_count != null && s.jina_keys_count > 0 && <span className="ml-1 rounded-full bg-success/15 px-2 py-0.5 text-[11px] text-success">set</span>}
         </p>
-        <p className="mt-0.5 text-xs text-text-secondary">One per line. Rotation is automatic: 429 rate-limit moves to the next key, dead keys are skipped. Used by every fetch instead of env.</p>
+        <p className="mt-0.5 text-xs text-text-secondary">Single key used by every fetch (cron-paced, like doctor scraping). Stored in the database — no env needed.</p>
         {s.jina_keys_masked && s.jina_keys_masked.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
-            {s.jina_keys_masked.map((k) => (
+            {s.jina_keys_masked.slice(0, 1).map((k) => (
               <span key={k} className="rounded-full bg-surface-alt px-2.5 py-1 font-mono text-[11px] text-text-secondary">{k}</span>
             ))}
           </div>
         )}
-        <textarea rows={3} placeholder="jina_... (one key per line) — paste to replace all"
+        <input type="password" placeholder="jina_... — paste to replace"
           value={keysTouched ? keysText : ""}
           onChange={(e) => { setKeysText(e.target.value); setKeysTouched(true); }}
           className="mt-2 w-full rounded-xl border border-border bg-surface-alt px-3 py-2 font-mono text-xs text-text-primary outline-none focus:border-primary" />
         <button disabled={!keysTouched || !keysText.trim()}
-          onClick={() => { update({ jina_keys: keysText }); setKeysText(""); setKeysTouched(false); }}
+          onClick={() => { update({ jina_keys: keysText.trim() }); setKeysText(""); setKeysTouched(false); }}
           className="mt-2 rounded-xl bg-primary px-4 py-2 text-xs font-semibold text-white disabled:opacity-40">
-          Save keys
+          Save key
         </button>
       </div>
     </main>

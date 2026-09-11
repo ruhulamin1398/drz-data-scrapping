@@ -13,29 +13,21 @@ const base = (process.env.DRX_API_BASE || "").replace(/\/$/, "");
 const token = process.env.DRX_ADMIN_TOKEN || "";
 if (!base || !token) throw new Error("DRX_API_BASE / DRX_ADMIN_TOKEN required");
 
-// Jina keys from /settings (settings.jina_keys, one per line), env fallback.
+// Single Jina key from /settings (settings.jina_keys, first line), env fallback.
 const keyClient = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
 await keyClient.connect();
-let jinaKeys = [];
+let jinaKey = "";
 try {
   const r = await keyClient.query("SELECT jina_keys FROM settings WHERE id=1");
-  jinaKeys = String(r.rows[0]?.jina_keys ?? "").split("\n").map((s) => s.trim()).filter((s) => s.length > 10);
+  jinaKey = String(r.rows[0]?.jina_keys ?? "").split("\n").map((s) => s.trim()).find((s) => s.length > 10) || "";
 } catch { /* pre-migration: env only */ }
 await keyClient.end().catch(() => {});
-if (process.env.JINA_API_KEY && !jinaKeys.includes(process.env.JINA_API_KEY.trim())) jinaKeys.push(process.env.JINA_API_KEY.trim());
-if (!jinaKeys.length) throw new Error("no Jina keys: add keys on /settings or set JINA_API_KEY");
-let jinaIdx = 0;
+if (!jinaKey) jinaKey = (process.env.JINA_API_KEY || "").trim();
+if (!jinaKey) throw new Error("no Jina key: add one on /settings or set JINA_API_KEY");
 
 async function jinaGet(url) {
-  let last = 0;
-  for (let i = 0; i < jinaKeys.length; i++) {
-    const k = jinaKeys[(jinaIdx + i) % jinaKeys.length];
-    const res = await fetch(`https://r.jina.ai/${url}`, { headers: { Authorization: `Bearer ${k}` } });
-    if (res.ok) { jinaIdx = (jinaKeys.indexOf(k) + 1) % jinaKeys.length; return res; }
-    last = res.status;
-    if (res.status !== 429 && res.status !== 401 && res.status !== 402) break;
-  }
-  return { ok: false, status: last };
+  const res = await fetch(`https://r.jina.ai/${url}`, { headers: { Authorization: `Bearer ${jinaKey}` } });
+  return res;
 }
 
 const SPECIALTIES = ["anesthesiologist","oncologist","cardiac-surgeon","cardiologist","chest-specialist","pediatrician","colorectal-surgeon","dentist","endocrinologist","otolaryngologist","homeopathic","ophthalmologist","gastroenterologist","general-surgeon","gynecologist","hematologist","infertility-specialist","nephrologist","hepatologist","medicine-specialist","neurologist","neurosurgeon","orthopedic-specialist","pediatric-surgeon","physical-medicine-specialist","plastic-surgeon","psychiatrist","rheumatologist","sexologist","dermatologist","urologist","vascular-surgeon"];
