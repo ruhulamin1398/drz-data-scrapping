@@ -15,7 +15,7 @@ for (const line of fs.readFileSync(".env.local", "utf8").split("\n")) {
   if (i > 0 && !line.trimStart().startsWith("#")) process.env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
 }
 
-const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 30 });
 const BASE = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").replace(/\/$/, "");
 const TOKEN = process.env.DRX_ADMIN_TOKEN || "";
 if (!TOKEN) throw new Error("DRX_ADMIN_TOKEN required");
@@ -87,7 +87,7 @@ const { rows } = await pool.query(
   "SELECT id, source_url, drx_id, name FROM doctor_queue WHERE status='success' AND drx_id IS NOT NULL ORDER BY id"
 );
 const max = Number(process.env.MAX || 0);
-const CONC = Math.min(Math.max(1, Number(process.env.CONC || 5)), 10);
+const CONC = Math.min(Math.max(1, Number(process.env.CONC || 5)), 30);
 const todo = rows.filter((r) => !done.has(r.id));
 const run = max > 0 ? todo.slice(0, max) : todo;
 console.log(`total: ${rows.length}, done: ${done.size}, todo: ${todo.length}, running: ${run.length}, concurrency: ${CONC}`);
