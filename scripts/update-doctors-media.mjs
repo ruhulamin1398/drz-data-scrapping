@@ -1,9 +1,10 @@
 // Update task (not create): concurrent workers over success rows with drx_id.
 // Per doctor, from raw profile HTML only (no Jina, no AI):
 //   1. photo: og:image -> body wp-post-image fallback (placeholders dr-male/
-//      dr-female excluded; PATCH null clears a previously-set placeholder)
+//      dr-female are not real photos: skipped, backend keeps whatever it has)
 //   2. experienced_year: structured <li class="experience" title="Experiences">
-//      ("15+ Years of Experience") — empty element means no data, skip honestly
+//      ("15+ Years of Experience") — empty element means no data, skipped
+// No real photo found -> row marked failed (fail_reason='photo not found') for later retry.
 // Usage: CONC=5 node scripts/update-doctors-media.mjs (MAX=n for trial slice)
 // Resume-safe: completed ids in /tmp/media-update-done.json
 import fs from "fs";
@@ -47,20 +48,19 @@ function cleanImg(u) {
 }
 
 // Photo: og:image first, then any body img with wp-post-image class (attr-order independent).
+// Returns "" when no real photo (placeholders excluded) — caller marks failed.
 function parsePhoto(html) {
   const og = /<meta\s+property="og:image"\s+content="([^"]+)"/i.exec(html)?.[1] || "";
   const good = cleanImg(og);
-  if (good) return { photo: good, cleared: false };
+  if (good) return good;
   const tags = html.match(/<img\b[^>]*>/gi) || [];
   for (const tag of tags) {
     if (!/wp-post-image/i.test(tag)) continue;
     const src = /src="([^"]+)"/i.exec(tag)?.[1] || "";
     const c = cleanImg(src);
-    if (c) return { photo: c, cleared: false };
+    if (c) return c;
   }
-  // og was a placeholder (or missing) and no body photo: signal clearing.
-  if (og) return { photo: "", cleared: true };
-  return { photo: "", cleared: false };
+  return "";
 }
 
 // Structured experience line: <li class="experience" title="Experiences">...<strong>15+ Years of Experience</strong>
@@ -92,20 +92,20 @@ const todo = rows.filter((r) => !done.has(r.id));
 const run = max > 0 ? todo.slice(0, max) : todo;
 console.log(`total: ${rows.length}, done: ${done.size}, todo: ${todo.length}, running: ${run.length}, concurrency: ${CONC}`);
 
-let patched = 0, cleared = 0, yearsSet = 0, failed = 0;
+let patched = 0, yearsSet = 0, failed = 0;
 async function worker(items) {
   for (const row of items) {
     try {
       const html = await fetchHtml(row.source_url);
-      const payload = {};
-      if (html) {
-        const { photo, cleared: clr } = parsePhoto(html);
-        if (photo) payload.photo = photo;
-        else if (clr) { payload.photo = null; cleared++; }
+      if (!html) throw new Error("profile html unreachable");
+      const photo = parsePhoto(html);
+      if (!photo) {
+        await pool.query("UPDATE doctor_queue SET status='failed', fail_reason='photo not found', updated_at=now() WHERE id=$1", [row.id]);
+        failed++;
+      } else {
+        const payload = { photo };
         const years = parseYears(html);
         if (years) { payload.experienced_year = years; yearsSet++; }
-      }
-      if (Object.keys(payload).length) {
         await patchDoctor(row.drx_id, payload);
         patched++;
       }
@@ -116,7 +116,7 @@ async function worker(items) {
     done.add(row.id);
     if (done.size % 50 === 0) {
       save();
-      console.log(`progress ${done.size}/${rows.length} patched=${patched} cleared=${cleared} years=${yearsSet} failed=${failed}`);
+      console.log(`progress ${done.size}/${rows.length} patched=${patched} years=${yearsSet} failed=${failed}`);
     }
     await new Promise((r) => setTimeout(r, 200));
   }
@@ -124,5 +124,5 @@ async function worker(items) {
 const shards = Array.from({ length: CONC }, (_, i) => run.filter((_, j) => j % CONC === i));
 await Promise.all(shards.map(worker));
 save();
-console.log(`FINAL patched=${patched} cleared=${cleared} years=${yearsSet} failed=${failed}`);
+console.log(`FINAL patched=${patched} years=${yearsSet} failed=${failed}`);
 await pool.end();
