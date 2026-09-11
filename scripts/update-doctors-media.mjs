@@ -103,43 +103,48 @@ const { rows } = await pool.query(
   "SELECT id, source_url, drx_id, name, structure_md FROM doctor_queue WHERE status='success' AND drx_id IS NOT NULL ORDER BY id"
 );
 const max = Number(process.env.MAX || 0);
+const CONC = Math.min(Math.max(1, Number(process.env.CONC || 5)), 10);
 const todo = rows.filter((r) => !done.has(r.id));
 const run = max > 0 ? todo.slice(0, max) : todo;
-console.log(`total: ${rows.length}, done: ${done.size}, todo: ${todo.length}, running: ${run.length}`);
+console.log(`total: ${rows.length}, done: ${done.size}, todo: ${todo.length}, running: ${run.length}, concurrency: ${CONC}`);
 
 let patched = 0, cleared = 0, mdSaved = 0, yearsSet = 0, failed = 0;
-for (const row of run) {
-  try {
-    let md = row.structure_md;
-    if (!md) {
-      md = await jinaFetch(row.source_url);
-      await pool.query("UPDATE doctor_queue SET structure_md=$2, updated_at=now() WHERE id=$1", [row.id, md]);
-      mdSaved++;
+async function worker(items) {
+  for (const row of items) {
+    try {
+      let md = row.structure_md;
+      if (!md) {
+        md = await jinaFetch(row.source_url);
+        await pool.query("UPDATE doctor_queue SET structure_md=$2, updated_at=now() WHERE id=$1", [row.id, md]);
+        mdSaved++;
+      }
+      const html = await fetchHtml(row.source_url);
+      const payload = {};
+      if (html) {
+        const { photo, cleared: clr } = parsePhoto(html);
+        if (photo) payload.photo = photo;
+        else if (clr) { payload.photo = null; cleared++; }
+        const years = parseYears(html);
+        if (years) { payload.experienced_year = years; yearsSet++; }
+      }
+      if (Object.keys(payload).length) {
+        await patchDoctor(row.drx_id, payload);
+        patched++;
+      }
+    } catch (e) {
+      failed++;
+      console.log(`FAIL ${row.id} ${row.source_url}: ${String(e).slice(0, 120)}`);
     }
-    const html = await fetchHtml(row.source_url);
-    const payload = {};
-    if (html) {
-      const { photo, cleared: clr } = parsePhoto(html);
-      if (photo) payload.photo = photo;
-      else if (clr) { payload.photo = null; cleared++; }
-      const years = parseYears(html);
-      if (years) { payload.experienced_year = years; yearsSet++; }
+    done.add(row.id);
+    if (done.size % 50 === 0) {
+      save();
+      console.log(`progress ${done.size}/${rows.length} patched=${patched} cleared=${cleared} mdSaved=${mdSaved} years=${yearsSet} failed=${failed}`);
     }
-    if (Object.keys(payload).length) {
-      await patchDoctor(row.drx_id, payload);
-      patched++;
-    }
-  } catch (e) {
-    failed++;
-    console.log(`FAIL ${row.id} ${row.source_url}: ${String(e).slice(0, 120)}`);
+    await new Promise((r) => setTimeout(r, 200));
   }
-  done.add(row.id);
-  if (done.size % 50 === 0) {
-    save();
-    console.log(`progress ${done.size}/${rows.length} patched=${patched} cleared=${cleared} mdSaved=${mdSaved} years=${yearsSet} failed=${failed}`);
-  }
-  await new Promise((r) => setTimeout(r, 300));
 }
+const shards = Array.from({ length: CONC }, (_, i) => run.filter((_, j) => j % CONC === i));
+await Promise.all(shards.map(worker));
 save();
 console.log(`FINAL patched=${patched} cleared=${cleared} mdSaved=${mdSaved} years=${yearsSet} failed=${failed}`);
 await pool.end();
