@@ -83,6 +83,21 @@ async function patchDoctor(drxId, payload) {
   if (!r.ok) throw new Error(`patch ${r.status}: ${(await r.text()).slice(0, 120)}`);
 }
 
+// Backend-hosted photo via file manager (doctor `photoUrl` PATCH 500s, so we
+// do its two steps manually): upload from URL -> PATCH the stored R2 URL.
+async function uploadPhoto(imageUrl, title) {
+  const r = await fetch(`${BASE}/api/v1/files/from-url`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}` },
+    body: JSON.stringify({ url: imageUrl, title }),
+  });
+  if (!r.ok) throw new Error(`file upload ${r.status}: ${(await r.text()).slice(0, 120)}`);
+  const j = await r.json();
+  const url = j?.data?.url || "";
+  if (!url) throw new Error("file upload returned no url");
+  return url;
+}
+
 const { rows } = await pool.query(
   "SELECT id, source_url, drx_id, name FROM doctor_queue WHERE status='success' AND drx_id IS NOT NULL ORDER BY id"
 );
@@ -103,7 +118,8 @@ async function worker(items) {
         await pool.query("UPDATE doctor_queue SET status='failed', fail_reason='photo not found', updated_at=now() WHERE id=$1", [row.id]);
         failed++;
       } else {
-        const payload = { photo };
+        const stored = await uploadPhoto(photo, row.name || `doctor-${row.id}`);
+        const payload = { photo: stored };
         const years = parseYears(html);
         if (years) { payload.experienced_year = years; yearsSet++; }
         await patchDoctor(row.drx_id, payload);
