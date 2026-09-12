@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "sync:md": "cp ../facilities.md data/facilities.md",
-    "media": "node scripts/update-doctors-media.mjs"
+    "media": "node scripts/update-doctors-media.mjs",
+    "unphoto-female": "node scripts/remove-female-photos.mjs"
   },
   "dependencies": {
     "next": "16.3.4",
