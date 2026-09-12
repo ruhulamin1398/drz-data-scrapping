@@ -24,6 +24,21 @@ const DONE_FILE = "/tmp/media-update-done.json";
 const done = new Set(fs.existsSync(DONE_FILE) ? JSON.parse(fs.readFileSync(DONE_FILE, "utf8")) : []);
 const save = () => fs.writeFileSync(DONE_FILE, JSON.stringify([...done]));
 
+// Department id -> name (one call) for rich photo titles:
+// "Dr. X | Cardiologist | Sylhet".
+let deptName = new Map();
+try {
+  const d = await (await fetch(`${BASE}/api/v1/departments?limit=100`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json();
+  for (const x of d?.data?.items ?? []) deptName.set(x.id, x.name);
+} catch { /* titles fall back to slugs */ }
+
+function photoTitle(row) {
+  const depts = (row.department_ids || []).map((id) => deptName.get(id)).filter(Boolean);
+  const spec = depts.length ? depts : (row.specialty_slugs || []);
+  const city = row.city ? row.city.charAt(0).toUpperCase() + row.city.slice(1) : "";
+  return [row.name || `doctor-${row.id}`, spec.join(", "), city].filter(Boolean).join(" | ");
+}
+
 const PLACEHOLDER = /dr-male|dr-female|doctor-bd|logo|icon|placeholder|default|banner|favicon/i;
 
 async function fetchHtml(url) {
@@ -99,7 +114,7 @@ async function uploadPhoto(imageUrl, title) {
 }
 
 const { rows } = await pool.query(
-  "SELECT id, source_url, drx_id, name FROM doctor_queue WHERE status='success' AND drx_id IS NOT NULL ORDER BY id"
+  "SELECT id, source_url, drx_id, name, specialty_slugs, department_ids, city FROM doctor_queue WHERE status='success' AND drx_id IS NOT NULL ORDER BY id"
 );
 const max = Number(process.env.MAX || 0);
 const CONC = Math.min(Math.max(1, Number(process.env.CONC || 5)), 30);
@@ -118,7 +133,7 @@ async function worker(items) {
         await pool.query("UPDATE doctor_queue SET status='failed', fail_reason='photo not found', updated_at=now() WHERE id=$1", [row.id]);
         failed++;
       } else {
-        const stored = await uploadPhoto(photo, row.name || `doctor-${row.id}`);
+        const stored = await uploadPhoto(photo, photoTitle(row));
         const payload = { photo: stored };
         const years = parseYears(html);
         if (years) { payload.experienced_year = years; yearsSet++; }
