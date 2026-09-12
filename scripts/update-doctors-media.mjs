@@ -133,12 +133,18 @@ async function worker(items) {
         await pool.query("UPDATE doctor_queue SET status='failed', fail_reason='photo not found', updated_at=now() WHERE id=$1", [row.id]);
         failed++;
       } else {
-        const stored = await uploadPhoto(photo, photoTitle(row));
-        const payload = { photo: stored };
+        // No female photos kept: check backend gender before uploading.
+        const g = await (await fetch(`${BASE}/api/v1/doctors/${row.drx_id}`, { headers: { Authorization: `Bearer ${TOKEN}` } })).json().catch(() => null);
+        const payload = {};
+        if (g?.data?.gender !== "female") {
+          payload.photo = await uploadPhoto(photo, photoTitle(row));
+        }
         const years = parseYears(html);
         if (years) { payload.experienced_year = years; yearsSet++; }
-        await patchDoctor(row.drx_id, payload);
-        patched++;
+        if (Object.keys(payload).length) {
+          await patchDoctor(row.drx_id, payload);
+          patched++;
+        }
       }
     } catch (e) {
       failed++;
