@@ -9,7 +9,8 @@
     "lint": "eslint",
     "sync:md": "cp ../facilities.md data/facilities.md",
     "media": "node scripts/update-doctors-media.mjs",
-    "unphoto-female": "node scripts/remove-female-photos.mjs"
+    "unphoto-female": "node scripts/remove-female-photos.mjs",
+    "symptoms": "node scripts/push-symptom-departments.mjs"
   },
   "dependencies": {
     "next": "16.3.4",
