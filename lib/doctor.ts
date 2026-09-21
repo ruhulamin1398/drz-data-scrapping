@@ -241,7 +241,7 @@ export function chamberText(chambers: DoctorChamber[]): string {
 // Step 3: POST doctor, then POST each degree with doctorId, then POST each chamber
 // with doctorId + facilityId (matched) or facilityName (free text). Update in place when drxId given.
 export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated?: boolean; degrees: number; chambers: number }> {
-  const base = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").replace(/\/$/, "");
+  const base = (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
   const token = process.env.DRX_ADMIN_TOKEN || "";
   if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
   if (!d.name || !d.departmentIds.length) throw new Error("name + departmentIds required");

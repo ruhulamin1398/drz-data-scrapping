@@ -8,7 +8,7 @@ for (const line of fs.readFileSync(".env.local", "utf8").split("\n")) {
   if (i > 0 && !line.trimStart().startsWith("#")) process.env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
 }
 
-const BASE = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").replace(/\/$/, "");
+const BASE = (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
 const TOKEN = process.env.DRX_ADMIN_TOKEN || "";
 if (!TOKEN) throw new Error("DRX_ADMIN_TOKEN required");
 const H = { Authorization: `Bearer ${TOKEN}`, "Content-Type": "application/json" };

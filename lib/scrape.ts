@@ -58,7 +58,7 @@ function slugify(s: string): string {
 
 // Step 3: create on drx-backend, or PATCH in place when drxId is given (no duplicates).
 export async function pushDrx(f: DrxFacility): Promise<{ drxId: number; updated?: boolean }> {
-  const base = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").replace(/\/$/, "");
+  const base = (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
   const token = process.env.DRX_ADMIN_TOKEN || "";
   if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
   if (!f.name || !f.divisionId || !f.districtId || !f.typeId) throw new Error("name, divisionId, districtId, typeId required");

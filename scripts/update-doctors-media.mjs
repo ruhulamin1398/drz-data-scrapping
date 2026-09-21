@@ -16,7 +16,7 @@ for (const line of fs.readFileSync(".env.local", "utf8").split("\n")) {
 }
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 30 });
-const BASE = (process.env.DRX_API_BASE || "https://drx-backend.vercel.app").replace(/\/$/, "");
+const BASE = (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
 const TOKEN = process.env.DRX_ADMIN_TOKEN || "";
 if (!TOKEN) throw new Error("DRX_ADMIN_TOKEN required");
 
