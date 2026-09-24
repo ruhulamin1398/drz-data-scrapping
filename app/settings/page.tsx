@@ -1,16 +1,18 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import QueueSwitch from "@/components/QueueSwitch";
+import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 
 type Settings = {
   enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean;
-  concurrency: number; tasks_per_tick: number; heartbeat_at: string | null;
+  concurrency: number; tasks_per_tick: number;
+  facilities_tasks_per_tick: number; doctors_tasks_per_tick: number;
+  heartbeat_at: string | null;
   jina_keys_count?: number; jina_keys_masked?: string[];
 };
 
 export default function SettingsPage() {
-  const [s, setS] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
+  const [s, setS] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, concurrency: 3, tasks_per_tick: 10, facilities_tasks_per_tick: 10, doctors_tasks_per_tick: 10, heartbeat_at: null });
   const [saved, setSaved] = useState(false);
   const [keysText, setKeysText] = useState("");
   const [keysTouched, setKeysTouched] = useState(false);
@@ -72,29 +74,26 @@ export default function SettingsPage() {
           onToggle={() => update({ facilities_enabled: !s.facilities_enabled })}
           title={`Facilities queue ${s.facilities_enabled ? "on" : "off"}`}
           hint={s.enabled ? (s.facilities_enabled ? "Cron processes facilities" : "Facilities skipped by cron") : "Needs Processor active to run"}
-        />
+        >
+          <TasksPerTickInput value={s.facilities_tasks_per_tick} onChange={(n) => update({ facilities_tasks_per_tick: n })} />
+        </QueueSwitch>
         <QueueSwitch
           on={s.doctors_enabled}
           onToggle={() => update({ doctors_enabled: !s.doctors_enabled })}
           title={`Doctors queue ${s.doctors_enabled ? "on" : "off"}`}
           hint={s.enabled ? (s.doctors_enabled ? "Cron processes doctors (Render)" : "Doctors skipped by cron") : "Needs Processor active to run"}
-        />
+        >
+          <TasksPerTickInput value={s.doctors_tasks_per_tick} onChange={(n) => update({ doctors_tasks_per_tick: n })} />
+        </QueueSwitch>
       </div>
 
       {/* knobs */}
-      <div className="mt-3 grid gap-3 md:grid-cols-2">
-        <label className="rounded-2xl border border-border bg-surface p-4 text-sm shadow-sm">
-          <span className="font-semibold text-text-primary">Concurrency</span>
-          <span className="mt-0.5 block text-xs text-text-secondary">Items processed at the same time (server safety)</span>
+      <div className="mt-3">
+        <label className="block rounded-2xl border border-border bg-surface p-4 text-sm shadow-sm">
+          <span className="font-semibold text-text-primary">Concurrency (system)</span>
+          <span className="mt-0.5 block text-xs text-text-secondary">Items processed at the same time, shared by both queues</span>
           <input type="number" min={1} max={10} value={s.concurrency}
             onChange={(e) => update({ concurrency: Number(e.target.value) })}
-            className="mt-2 w-full rounded-xl border border-border bg-surface-alt px-3 py-2 text-text-primary outline-none focus:border-primary" />
-        </label>
-        <label className="rounded-2xl border border-border bg-surface p-4 text-sm shadow-sm">
-          <span className="font-semibold text-text-primary">Tasks per tick</span>
-          <span className="mt-0.5 block text-xs text-text-secondary">Each cron run tops up to this many active</span>
-          <input type="number" min={1} max={50} value={s.tasks_per_tick}
-            onChange={(e) => update({ tasks_per_tick: Number(e.target.value) })}
             className="mt-2 w-full rounded-xl border border-border bg-surface-alt px-3 py-2 text-text-primary outline-none focus:border-primary" />
         </label>
       </div>

@@ -30,6 +30,7 @@ export type DocRow = {
 export type PipelineStats = {
   enabled: boolean; facilitiesEnabled: boolean; doctorsEnabled: boolean;
   concurrency: number; tasks_per_tick: number;
+  facilities_tasks_per_tick: number; doctors_tasks_per_tick: number;
   workerActive: boolean; workerHeartbeat: string | null; heartbeatAt: string | null;
   facilities: Record<string, number>; doctors: Record<string, number>;
   lastRun: { status: string; succeeded: number; failed: number; claimed: number; finishedAt: string | null } | null;
@@ -43,6 +44,7 @@ export async function getPipelineStats(): Promise<PipelineStats> {
   const f = full?.rows[0] as {
     enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean;
     concurrency: number; tasks_per_tick: number;
+    facilities_tasks_per_tick: number; doctors_tasks_per_tick: number;
     worker_active: boolean; worker_heartbeat: string | null; heartbeat_at: string | null;
   } | undefined;
   const tally = async (table: string) => {
@@ -60,6 +62,8 @@ export async function getPipelineStats(): Promise<PipelineStats> {
     enabled: !!f?.enabled,
     facilitiesEnabled: f?.facilities_enabled !== false, doctorsEnabled: f?.doctors_enabled !== false,
     concurrency: f?.concurrency ?? 0, tasks_per_tick: f?.tasks_per_tick ?? 0,
+    facilities_tasks_per_tick: f?.facilities_tasks_per_tick ?? f?.tasks_per_tick ?? 0,
+    doctors_tasks_per_tick: f?.doctors_tasks_per_tick ?? f?.tasks_per_tick ?? 0,
     workerActive: !!f?.worker_active, workerHeartbeat: f?.worker_heartbeat ?? null,
     heartbeatAt: f?.heartbeat_at ?? null,
     facilities: await tally("facility_queue"), doctors: await tally("doctor_queue"),
@@ -82,11 +86,14 @@ async function getSettings(pool: Pool) {
   return r.rows[0] as {
     enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean;
     concurrency: number; tasks_per_tick: number;
+    facilities_tasks_per_tick: number; doctors_tasks_per_tick: number;
     worker_active: boolean; worker_heartbeat: string | null;
   } | undefined;
 }
 
 const queueOn = (v: unknown) => v !== false;
+const clampTick = (v: unknown, fallback: unknown) =>
+  Math.min(Math.max(1, Math.floor(Number(v ?? fallback)) || 1), 50);
 
 // Doctor items are slow (~60-90s: jina + big-model extract + multi-push) and do not
 // survive Vercel's fire-and-forget after() window — a Vercel claim would just lock
@@ -293,7 +300,7 @@ function logTick(pool: Pool, status: string, toppedUp: number) {
   ).catch(() => {});
 }
 
-// One cron tick: reconcile, top pending up to (tasks_per_tick − active) into
+// One cron tick: reconcile, top each queue up to its own tasks-per-tick into
 // processing, ensure the worker loop is going, and RETURN IMMEDIATELY.
 // Next tick while the loop works: only tops up, never restarts it.
 export async function runProcessor(): Promise<TickResult> {
@@ -319,24 +326,26 @@ export async function runProcessor(): Promise<TickResult> {
   ).catch(() => {});
 
   const concurrency = Math.min(Math.max(1, s.concurrency || 1), 10);
-  const quota = Math.min(Math.max(1, s.tasks_per_tick || 1), 50);
   const facOn = queueOn(s.facilities_enabled);
   const docOn = queueOn(s.doctors_enabled);
   if (!facOn && !docOn) {
     await logTick(pool, "paused", 0);
     return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0 };
   }
+  // Per-queue quotas: each queue tops up to its own tasks-per-tick.
+  // Concurrency stays global (max parallel items inside the worker loop).
+  const facQuota = clampTick(s.facilities_tasks_per_tick, s.tasks_per_tick);
+  const docQuota = clampTick(s.doctors_tasks_per_tick, s.tasks_per_tick);
   const active0 = facOn
     ? Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='processing'")).rows[0].c)
     : 0;
   const dactive0 = docOn
     ? Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='processing'")).rows[0].c)
     : 0;
-  // Facilities first (existing behavior), doctors take the remaining quota.
   // Disabled queues claim nothing.
-  const need = facOn ? Math.max(0, quota - active0 - dactive0) : 0;
+  const need = facOn ? Math.max(0, facQuota - active0) : 0;
   const toppedUp = need > 0 ? (await claim(pool, need)).length : 0;
-  const dneed = docOn && DOCS_ON_SERVER ? Math.max(0, quota - active0 - dactive0 - toppedUp) : 0;
+  const dneed = docOn && DOCS_ON_SERVER ? Math.max(0, docQuota - dactive0) : 0;
   const dtoppedUp = dneed > 0 ? (await claimDoctors(pool, dneed)).length : 0;
   const remaining = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='pending'")).rows[0].c);
   const dremaining = Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='pending'")).rows[0].c);

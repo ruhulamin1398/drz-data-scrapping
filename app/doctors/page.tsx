@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import QueueSwitch from "@/components/QueueSwitch";
+import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 
 type DRow = {
   id: number; source_url: string; name: string | null;
@@ -25,7 +25,7 @@ export default function Doctors() {
   const [last, setLast] = useState("");
   const [done, setDone] = useState(0);
   const [active, setActive] = useState<string[]>([]);
-  const [settings, setSettings] = useState({ enabled: false, doctors_enabled: true });
+  const [settings, setSettings] = useState({ enabled: false, doctors_enabled: true, doctors_tasks_per_tick: 10 });
   const stopRef = useRef(false);
   const busyRetry = busy || active.length > 0;
   const queueRunning = settings.enabled && settings.doctors_enabled;
@@ -51,7 +51,18 @@ export default function Doctors() {
     try {
       const r = await fetch("/api/settings");
       const j = await r.json();
-      if (!j.error) setSettings({ enabled: !!j.enabled, doctors_enabled: j.doctors_enabled !== false });
+      if (!j.error) setSettings({ enabled: !!j.enabled, doctors_enabled: j.doctors_enabled !== false, doctors_tasks_per_tick: j.doctors_tasks_per_tick ?? 10 });
+    } catch { /* ignore */ }
+  }
+
+  async function saveTasksPerTick(n: number) {
+    try {
+      const r = await fetch("/api/settings", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doctors_tasks_per_tick: n }),
+      });
+      const j = await r.json();
+      if (!j.error) setSettings({ enabled: !!j.enabled, doctors_enabled: j.doctors_enabled !== false, doctors_tasks_per_tick: j.doctors_tasks_per_tick ?? n });
     } catch { /* ignore */ }
   }
 
@@ -64,7 +75,7 @@ export default function Doctors() {
         body: JSON.stringify({ doctors_enabled: on }),
       });
       const j = await r.json();
-      if (!j.error) setSettings({ enabled: !!j.enabled, doctors_enabled: j.doctors_enabled !== false });
+      if (!j.error) setSettings({ enabled: !!j.enabled, doctors_enabled: j.doctors_enabled !== false, doctors_tasks_per_tick: j.doctors_tasks_per_tick ?? 10 });
     } catch { /* ignore */ }
   }
 
@@ -197,7 +208,9 @@ export default function Doctors() {
           onToggle={() => setDoctors(!settings.doctors_enabled)}
           title={`Doctors queue ${settings.doctors_enabled ? "on" : "off"}`}
           hint={!settings.enabled ? "Needs Processor active in Settings to run" : settings.doctors_enabled ? "Cron processes doctors (Render)" : "Doctors skipped by cron"}
-        />
+        >
+          <TasksPerTickInput value={settings.doctors_tasks_per_tick} onChange={saveTasksPerTick} />
+        </QueueSwitch>
       </div>
 
       <div className="mt-4 grid grid-cols-4 gap-2 text-center">

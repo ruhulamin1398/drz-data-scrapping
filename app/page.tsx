@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { parseExtracted } from "@/lib/parse";
-import QueueSwitch from "@/components/QueueSwitch";
+import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 
 type Group = {
   key: string; division: string; divisionId: number;
@@ -20,7 +20,7 @@ type QRow = {
 };
 
 type DoneStatus = "failed" | "success";
-type Settings = { enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; concurrency: number; tasks_per_tick: number; heartbeat_at: string | null };
+type Settings = { enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; concurrency: number; tasks_per_tick: number; facilities_tasks_per_tick: number; heartbeat_at: string | null };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const groupLabel = (g: Group) => `${g.division}${g.district ? ` — ${g.district}` : ""} (${g.items.length})`;
@@ -33,7 +33,7 @@ export default function Home() {
   const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState<number | "all">(20);
-  const [settings, setSettings] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
+  const [settings, setSettings] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, concurrency: 3, tasks_per_tick: 10, facilities_tasks_per_tick: 10, heartbeat_at: null });
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState<string[]>([]); // urls the browser is retrying right now
   const stopRef = useRef(false);
@@ -257,7 +257,9 @@ export default function Home() {
           onToggle={() => setFacilities(!settings.facilities_enabled)}
           title={`Facilities queue ${settings.facilities_enabled ? "on" : "off"}`}
           hint={!settings.enabled ? "Needs Processor active in Settings to run" : settings.facilities_enabled ? "Cron processes facilities" : "Facilities skipped by cron"}
-        />
+        >
+          <TasksPerTickInput value={settings.facilities_tasks_per_tick} onChange={(n) => saveSettings({ facilities_tasks_per_tick: n })} />
+        </QueueSwitch>
       </div>
 
       {/* counts */}
