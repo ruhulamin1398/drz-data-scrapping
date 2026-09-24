@@ -4,6 +4,7 @@ import { db } from "./db";
 import { fetchSource, extractInfo, pushDrx } from "./scrape";
 import { parseExtracted } from "./parse";
 import { fetchDoctorProfile, fetchDoctorPhoto, extractDoctor, deptTitle, pushDoctor } from "./doctor";
+import { visitUrl } from "./prewarm";
 
 export type QRow = {
   id: number; title: string; source_url: string;
@@ -18,6 +19,12 @@ export type TickResult = {
   status: "paused" | "started" | "already-running";
   toppedUp: number; active: number; remaining: number;
   dtoppedUp: number; dactive: number; dremaining: number;
+  ptoppedUp: number; pactive: number; premaining: number;
+};
+
+export type PrewarmRow = {
+  id: number; source_url: string; status: string;
+  http_code: number | null; duration_ms: number | null; fail_reason: string | null;
 };
 
 export type DocRow = {
@@ -28,11 +35,11 @@ export type DocRow = {
 };
 
 export type PipelineStats = {
-  enabled: boolean; facilitiesEnabled: boolean; doctorsEnabled: boolean;
+  enabled: boolean; facilitiesEnabled: boolean; doctorsEnabled: boolean; prewarmEnabled: boolean;
   concurrency: number; tasks_per_tick: number;
-  facilities_tasks_per_tick: number; doctors_tasks_per_tick: number;
+  facilities_tasks_per_tick: number; doctors_tasks_per_tick: number; prewarm_tasks_per_tick: number;
   workerActive: boolean; workerHeartbeat: string | null; heartbeatAt: string | null;
-  facilities: Record<string, number>; doctors: Record<string, number>;
+  facilities: Record<string, number>; doctors: Record<string, number>; prewarm: Record<string, number>;
   lastRun: { status: string; succeeded: number; failed: number; claimed: number; finishedAt: string | null } | null;
 };
 
@@ -42,9 +49,9 @@ export async function getPipelineStats(): Promise<PipelineStats> {
   const pool = db();
   const full = await pool.query("SELECT * FROM settings WHERE id=1").catch(() => null);
   const f = full?.rows[0] as {
-    enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean;
+    enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; prewarm_enabled: boolean;
     concurrency: number; tasks_per_tick: number;
-    facilities_tasks_per_tick: number; doctors_tasks_per_tick: number;
+    facilities_tasks_per_tick: number; doctors_tasks_per_tick: number; prewarm_tasks_per_tick: number;
     worker_active: boolean; worker_heartbeat: string | null; heartbeat_at: string | null;
   } | undefined;
   const tally = async (table: string) => {
@@ -61,12 +68,15 @@ export async function getPipelineStats(): Promise<PipelineStats> {
   return {
     enabled: !!f?.enabled,
     facilitiesEnabled: f?.facilities_enabled !== false, doctorsEnabled: f?.doctors_enabled !== false,
+    prewarmEnabled: f?.prewarm_enabled !== false,
     concurrency: f?.concurrency ?? 0, tasks_per_tick: f?.tasks_per_tick ?? 0,
     facilities_tasks_per_tick: f?.facilities_tasks_per_tick ?? f?.tasks_per_tick ?? 0,
     doctors_tasks_per_tick: f?.doctors_tasks_per_tick ?? f?.tasks_per_tick ?? 0,
+    prewarm_tasks_per_tick: f?.prewarm_tasks_per_tick ?? f?.tasks_per_tick ?? 0,
     workerActive: !!f?.worker_active, workerHeartbeat: f?.worker_heartbeat ?? null,
     heartbeatAt: f?.heartbeat_at ?? null,
     facilities: await tally("facility_queue"), doctors: await tally("doctor_queue"),
+    prewarm: await tally("prewarm_queue"),
     lastRun: lr ? {
       status: lr.status, succeeded: Number(lr.succeeded), failed: Number(lr.failed),
       claimed: Number(lr.claimed), finishedAt: lr.finished_at,
@@ -84,9 +94,9 @@ let loopRunning = false;
 async function getSettings(pool: Pool) {
   const r = await pool.query("SELECT * FROM settings WHERE id=1");
   return r.rows[0] as {
-    enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean;
+    enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; prewarm_enabled: boolean;
     concurrency: number; tasks_per_tick: number;
-    facilities_tasks_per_tick: number; doctors_tasks_per_tick: number;
+    facilities_tasks_per_tick: number; doctors_tasks_per_tick: number; prewarm_tasks_per_tick: number;
     worker_active: boolean; worker_heartbeat: string | null;
   } | undefined;
 }
@@ -157,6 +167,53 @@ async function processDoctorItem(pool: Pool, q: DocRow): Promise<boolean> {
     const msg = err instanceof Error ? err.message : String(err);
     await pool.query(
       `UPDATE doctor_queue SET status='failed', fail_reason=$2, updated_at=now() WHERE source_url=$1`,
+      [q.source_url, msg.slice(0, 300)]
+    ).catch(() => {});
+    return false;
+  }
+}
+
+// Atomically claim up to n pending pre-warm rows (same lock pattern as doctors).
+async function claimPrewarm(pool: Pool, n: number): Promise<PrewarmRow[]> {
+  const c = await pool.connect();
+  try {
+    await c.query("BEGIN");
+    const r = await c.query(
+      `SELECT * FROM prewarm_queue WHERE status='pending'
+       ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`,
+      [n]
+    );
+    const rows = r.rows as PrewarmRow[];
+    if (rows.length) {
+      await c.query(
+        `UPDATE prewarm_queue SET status='processing', locked_at=now(), updated_at=now()
+         WHERE id = ANY($1)`,
+        [rows.map((x) => x.id)]
+      );
+    }
+    await c.query("COMMIT");
+    return rows;
+  } catch (e) {
+    try { await c.query("ROLLBACK"); } catch { /* ignore */ }
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+
+// Server-side pre-warm visit: one GET warms the ISR cache. <400 = success.
+async function processPrewarmItem(pool: Pool, q: PrewarmRow): Promise<boolean> {
+  try {
+    const v = await visitUrl(q.source_url);
+    await pool.query(
+      `UPDATE prewarm_queue SET status=$2, http_code=$3, duration_ms=$4, fail_reason=$5, updated_at=now() WHERE source_url=$1`,
+      [q.source_url, v.ok ? "success" : "failed", v.code, v.durationMs, v.ok ? null : `http ${v.code}`]
+    );
+    return v.ok;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await pool.query(
+      `UPDATE prewarm_queue SET status='failed', fail_reason=$2, updated_at=now() WHERE source_url=$1`,
       [q.source_url, msg.slice(0, 300)]
     ).catch(() => {});
     return false;
@@ -243,7 +300,8 @@ async function workerLoop(concurrency: number): Promise<{ succeeded: number; fai
       if (!s || !s.enabled) break;
       const facOn = queueOn(s.facilities_enabled);
       const docOn = queueOn(s.doctors_enabled);
-      if (!facOn && !docOn) break;
+      const pwOn = queueOn(s.prewarm_enabled);
+      if (!facOn && !docOn && !pwOn) break;
       await pool.query("UPDATE settings SET worker_heartbeat=now() WHERE id=1").catch(() => {});
       // Server-owned rows only (locked_at NOT NULL) — browser retries own theirs.
       const batch = facOn
@@ -262,12 +320,22 @@ async function workerLoop(concurrency: number): Promise<{ succeeded: number; fai
           [concurrency]
         )
         : { rows: [] as DocRow[] };
+      const pbatch = pwOn
+        ? await pool.query(
+          `SELECT * FROM prewarm_queue
+           WHERE status='processing' AND locked_at IS NOT NULL
+           ORDER BY id LIMIT $1`,
+          [concurrency]
+        )
+        : { rows: [] as PrewarmRow[] };
       const rows = batch.rows as QRow[];
       const drows = dbatch.rows as DocRow[];
-      if (!rows.length && !drows.length) break;
+      const prows = pbatch.rows as PrewarmRow[];
+      if (!rows.length && !drows.length && !prows.length) break;
       const results = await Promise.all([
         ...rows.map((q) => processSingleItem(pool, q)),
         ...drows.map((q) => processDoctorItem(pool, q)),
+        ...prows.map((q) => processPrewarmItem(pool, q)),
       ]);
       const ok = results.filter(Boolean).length;
       succeeded += ok;
@@ -308,7 +376,7 @@ export async function runProcessor(): Promise<TickResult> {
   const s = await getSettings(pool);
   if (!s || !s.enabled) {
     await logTick(pool, "paused", 0);
-    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0 };
+    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0, ptoppedUp: 0, pactive: 0, premaining: 0 };
   }
   await pool.query("UPDATE settings SET heartbeat_at=now() WHERE id=1").catch(() => {});
 
@@ -324,18 +392,25 @@ export async function runProcessor(): Promise<TickResult> {
      WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
         OR locked_at < now() - INTERVAL '10 minutes')`
   ).catch(() => {});
+  await pool.query(
+    `UPDATE prewarm_queue SET status='pending', locked_at=NULL, updated_at=now()
+     WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
+        OR locked_at < now() - INTERVAL '10 minutes')`
+  ).catch(() => {});
 
   const concurrency = Math.min(Math.max(1, s.concurrency || 1), 10);
   const facOn = queueOn(s.facilities_enabled);
   const docOn = queueOn(s.doctors_enabled);
-  if (!facOn && !docOn) {
+  const pwOn = queueOn(s.prewarm_enabled);
+  if (!facOn && !docOn && !pwOn) {
     await logTick(pool, "paused", 0);
-    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0 };
+    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0, ptoppedUp: 0, pactive: 0, premaining: 0 };
   }
   // Per-queue quotas: each queue tops up to its own tasks-per-tick.
   // Concurrency stays global (max parallel items inside the worker loop).
   const facQuota = clampTick(s.facilities_tasks_per_tick, s.tasks_per_tick);
   const docQuota = clampTick(s.doctors_tasks_per_tick, s.tasks_per_tick);
+  const pwQuota = clampTick(s.prewarm_tasks_per_tick, s.tasks_per_tick);
   const active0 = facOn
     ? Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='processing'")).rows[0].c)
     : 0;
@@ -347,12 +422,18 @@ export async function runProcessor(): Promise<TickResult> {
   const toppedUp = need > 0 ? (await claim(pool, need)).length : 0;
   const dneed = docOn && DOCS_ON_SERVER ? Math.max(0, docQuota - dactive0) : 0;
   const dtoppedUp = dneed > 0 ? (await claimDoctors(pool, dneed)).length : 0;
+  const pactive0 = pwOn
+    ? Number((await pool.query("SELECT COUNT(*) c FROM prewarm_queue WHERE status='processing'")).rows[0].c)
+    : 0;
+  const pneed = pwOn ? Math.max(0, pwQuota - pactive0) : 0;
+  const ptoppedUp = pneed > 0 ? (await claimPrewarm(pool, pneed)).length : 0;
   const remaining = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='pending'")).rows[0].c);
   const dremaining = Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='pending'")).rows[0].c);
+  const premaining = Number((await pool.query("SELECT COUNT(*) c FROM prewarm_queue WHERE status='pending'")).rows[0].c);
 
-  const tick = { toppedUp, active: active0 + toppedUp, remaining, dtoppedUp, dactive: dactive0 + dtoppedUp, dremaining };
+  const tick = { toppedUp, active: active0 + toppedUp, remaining, dtoppedUp, dactive: dactive0 + dtoppedUp, dremaining, ptoppedUp, pactive: pactive0 + ptoppedUp, premaining };
   if (loopRunning) {
-    await logTick(pool, "already-running", toppedUp + dtoppedUp);
+    await logTick(pool, "already-running", toppedUp + dtoppedUp + ptoppedUp);
     return { status: "already-running", ...tick };
   }
   // Atomic cross-instance ownership: only one loop anywhere.
@@ -362,11 +443,11 @@ export async function runProcessor(): Promise<TickResult> {
      RETURNING id`
   ).catch(() => null);
   if (!own || !own.rows.length) {
-    await logTick(pool, "already-running", toppedUp + dtoppedUp);
+    await logTick(pool, "already-running", toppedUp + dtoppedUp + ptoppedUp);
     return { status: "already-running", ...tick };
   }
   loopRunning = true;
   after(() => workerLoop(concurrency));
-  await logTick(pool, "started", toppedUp + dtoppedUp);
+  await logTick(pool, "started", toppedUp + dtoppedUp + ptoppedUp);
   return { status: "started", ...tick };
 }

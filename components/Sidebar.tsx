@@ -25,6 +25,16 @@ const NAV = [
     ),
   },
   {
+    href: "/prewarm",
+    label: "Pre-warm",
+    desc: "ISR cache warm",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-5 w-5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7Z" />
+      </svg>
+    ),
+  },
+  {
     href: "/settings",
     label: "Settings",
     desc: "processor config",
