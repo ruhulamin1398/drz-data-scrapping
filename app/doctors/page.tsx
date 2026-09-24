@@ -278,6 +278,10 @@ export default function Doctors() {
               <span className="min-w-0 flex-1 truncate text-sm font-medium text-text-primary">{q.name}</span>
               <a href={q.source_url} target="_blank" rel="noopener noreferrer" title="Open scraped source page"
                 className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-primary hover:text-text-primary">↗</a>
+              {q.drx_id != null && (
+                <a href={`https://www.doctorzonebd.com/doctors/${q.drx_id}`} target="_blank" rel="noopener noreferrer" title="Open DoctorZone page to compare"
+                  className="rounded-lg border border-border px-2 py-1 text-xs font-medium text-text-secondary hover:border-primary hover:text-text-primary">DZ ↗</a>
+              )}
               <span className="rounded-md bg-surface-alt px-2 py-1 text-[11px] text-text-secondary">{q.specialty_slug}</span>
               <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>
               {q.drx_id != null && (
