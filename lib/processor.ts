@@ -28,7 +28,8 @@ export type DocRow = {
 };
 
 export type PipelineStats = {
-  enabled: boolean; concurrency: number; tasks_per_tick: number;
+  enabled: boolean; facilitiesEnabled: boolean; doctorsEnabled: boolean;
+  concurrency: number; tasks_per_tick: number;
   workerActive: boolean; workerHeartbeat: string | null; heartbeatAt: string | null;
   facilities: Record<string, number>; doctors: Record<string, number>;
   lastRun: { status: string; succeeded: number; failed: number; claimed: number; finishedAt: string | null } | null;
@@ -40,7 +41,8 @@ export async function getPipelineStats(): Promise<PipelineStats> {
   const pool = db();
   const full = await pool.query("SELECT * FROM settings WHERE id=1").catch(() => null);
   const f = full?.rows[0] as {
-    enabled: boolean; concurrency: number; tasks_per_tick: number;
+    enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean;
+    concurrency: number; tasks_per_tick: number;
     worker_active: boolean; worker_heartbeat: string | null; heartbeat_at: string | null;
   } | undefined;
   const tally = async (table: string) => {
@@ -55,7 +57,9 @@ export async function getPipelineStats(): Promise<PipelineStats> {
   ).catch(() => null);
   const lr = last?.rows[0];
   return {
-    enabled: !!f?.enabled, concurrency: f?.concurrency ?? 0, tasks_per_tick: f?.tasks_per_tick ?? 0,
+    enabled: !!f?.enabled,
+    facilitiesEnabled: f?.facilities_enabled !== false, doctorsEnabled: f?.doctors_enabled !== false,
+    concurrency: f?.concurrency ?? 0, tasks_per_tick: f?.tasks_per_tick ?? 0,
     workerActive: !!f?.worker_active, workerHeartbeat: f?.worker_heartbeat ?? null,
     heartbeatAt: f?.heartbeat_at ?? null,
     facilities: await tally("facility_queue"), doctors: await tally("doctor_queue"),
@@ -76,10 +80,13 @@ let loopRunning = false;
 async function getSettings(pool: Pool) {
   const r = await pool.query("SELECT * FROM settings WHERE id=1");
   return r.rows[0] as {
-    enabled: boolean; concurrency: number; tasks_per_tick: number;
+    enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean;
+    concurrency: number; tasks_per_tick: number;
     worker_active: boolean; worker_heartbeat: string | null;
   } | undefined;
 }
+
+const queueOn = (v: unknown) => v !== false;
 
 // Doctor items are slow (~60-90s: jina + big-model extract + multi-push) and do not
 // survive Vercel's fire-and-forget after() window — a Vercel claim would just lock
@@ -227,15 +234,20 @@ async function workerLoop(concurrency: number): Promise<{ succeeded: number; fai
     while (Date.now() < deadline) {
       const s = await getSettings(pool);
       if (!s || !s.enabled) break;
+      const facOn = queueOn(s.facilities_enabled);
+      const docOn = queueOn(s.doctors_enabled);
+      if (!facOn && !docOn) break;
       await pool.query("UPDATE settings SET worker_heartbeat=now() WHERE id=1").catch(() => {});
       // Server-owned rows only (locked_at NOT NULL) — browser retries own theirs.
-      const batch = await pool.query(
-        `SELECT * FROM facility_queue
-         WHERE status='processing' AND locked_at IS NOT NULL
-         ORDER BY id LIMIT $1`,
-        [concurrency]
-      );
-      const dbatch = DOCS_ON_SERVER
+      const batch = facOn
+        ? await pool.query(
+          `SELECT * FROM facility_queue
+           WHERE status='processing' AND locked_at IS NOT NULL
+           ORDER BY id LIMIT $1`,
+          [concurrency]
+        )
+        : { rows: [] as QRow[] };
+      const dbatch = docOn && DOCS_ON_SERVER
         ? await pool.query(
           `SELECT * FROM doctor_queue
            WHERE status='processing' AND locked_at IS NOT NULL
@@ -308,12 +320,23 @@ export async function runProcessor(): Promise<TickResult> {
 
   const concurrency = Math.min(Math.max(1, s.concurrency || 1), 10);
   const quota = Math.min(Math.max(1, s.tasks_per_tick || 1), 50);
-  const active0 = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='processing'")).rows[0].c);
-  const dactive0 = Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='processing'")).rows[0].c);
+  const facOn = queueOn(s.facilities_enabled);
+  const docOn = queueOn(s.doctors_enabled);
+  if (!facOn && !docOn) {
+    await logTick(pool, "paused", 0);
+    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0 };
+  }
+  const active0 = facOn
+    ? Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='processing'")).rows[0].c)
+    : 0;
+  const dactive0 = docOn
+    ? Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='processing'")).rows[0].c)
+    : 0;
   // Facilities first (existing behavior), doctors take the remaining quota.
-  const need = Math.max(0, quota - active0 - dactive0);
+  // Disabled queues claim nothing.
+  const need = facOn ? Math.max(0, quota - active0 - dactive0) : 0;
   const toppedUp = need > 0 ? (await claim(pool, need)).length : 0;
-  const dneed = DOCS_ON_SERVER ? Math.max(0, quota - active0 - dactive0 - toppedUp) : 0;
+  const dneed = docOn && DOCS_ON_SERVER ? Math.max(0, quota - active0 - dactive0 - toppedUp) : 0;
   const dtoppedUp = dneed > 0 ? (await claimDoctors(pool, dneed)).length : 0;
   const remaining = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='pending'")).rows[0].c);
   const dremaining = Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='pending'")).rows[0].c);

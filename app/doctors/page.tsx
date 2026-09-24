@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import QueueSwitch from "@/components/QueueSwitch";
 
 type DRow = {
   id: number; source_url: string; name: string | null;
@@ -21,13 +22,13 @@ export default function Doctors() {
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState<number | "all">(20);
   const [busy, setBusy] = useState(false);
-  const [batch, setBatch] = useState(10);
   const [last, setLast] = useState("");
   const [done, setDone] = useState(0);
   const [active, setActive] = useState<string[]>([]);
-  const [cronOn, setCronOn] = useState(false);
+  const [settings, setSettings] = useState({ enabled: false, doctors_enabled: true });
   const stopRef = useRef(false);
   const busyRetry = busy || active.length > 0;
+  const queueRunning = settings.enabled && settings.doctors_enabled;
 
   const tabCount = filter === "all"
     ? counts.pending + counts.processing + counts.success + counts.failed
@@ -46,27 +47,44 @@ export default function Doctors() {
     if (!j.error) { setRows(j.items); setCounts(j.counts); }
   }
 
+  async function loadSettings() {
+    try {
+      const r = await fetch("/api/settings");
+      const j = await r.json();
+      if (!j.error) setSettings({ enabled: !!j.enabled, doctors_enabled: j.doctors_enabled !== false });
+    } catch { /* ignore */ }
+  }
+
+  async function setDoctors(on: boolean) {
+    if (!on) stopRef.current = true; // halts any browser retry loop
+    else stopRef.current = false;
+    try {
+      const r = await fetch("/api/settings", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doctors_enabled: on }),
+      });
+      const j = await r.json();
+      if (!j.error) setSettings({ enabled: !!j.enabled, doctors_enabled: j.doctors_enabled !== false });
+    } catch { /* ignore */ }
+  }
+
   useEffect(() => {
     load("", "all", 1, perPage, "");
     fetch("/api/doctors/cities").then((r) => r.json()).then((j) => {
       if (j.cities?.length) setCities(j.cities);
     }).catch(() => {});
-    fetch("/api/settings").then((r) => r.json()).then((j) => {
-      if (!j.error) setCronOn(!!j.enabled);
-    }).catch(() => {});
+    loadSettings();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // While the server cron is enabled this page is a monitor — refresh as it works.
+  // While this queue runs on the server this page is a monitor — refresh as it works.
   useEffect(() => {
-    if (!cronOn) return;
+    if (!queueRunning) return;
     const t = setInterval(() => {
       load();
-      fetch("/api/settings").then((r) => r.json()).then((j) => {
-        if (!j.error) setCronOn(!!j.enabled);
-      }).catch(() => {});
+      loadSettings();
     }, 10000);
     return () => clearInterval(t);
-  }, [cronOn, city, specialty, filter, page, perPage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [queueRunning, city, specialty, filter, page, perPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function patch(url: string, body: object) {
     await fetch("/api/doctors/queue", {
@@ -115,38 +133,6 @@ export default function Doctors() {
     } finally {
       setActive((a) => a.filter((u) => u !== q.source_url));
     }
-  }
-
-  async function processNext() {
-    if (busy) return;
-    setBusy(true);
-    stopRef.current = false;
-    setLast("");
-    setDone(0);
-    try {
-      const r = await fetch(`/api/doctors/queue?status=pending&limit=${batch}`);
-      const j = await r.json();
-      const rows: DRow[] = j.items ?? [];
-      if (!rows.length) { setLast("nothing pending"); setBusy(false); return; }
-      let cursor = 0, ok = 0, fail = 0;
-      await Promise.all(
-        Array.from({ length: Math.min(2, rows.length) }, async () => {
-          while (true) {
-            if (stopRef.current) return;
-            const i = cursor++;
-            if (i >= rows.length) return;
-            if (await processOne(rows[i])) ok++; else fail++;
-            setDone(ok + fail);
-            load();
-          }
-        })
-      );
-      setLast(stopRef.current ? `stopped: ok ${ok}, failed ${fail}` : `ok ${ok}, failed ${fail}`);
-    } catch (e) {
-      setLast(`error: ${e instanceof Error ? e.message : String(e)}`);
-    }
-    setBusy(false);
-    load();
   }
 
   // Instant bulk retry: claim failed rows for this tab and run them right away.
@@ -202,8 +188,17 @@ export default function Doctors() {
     <main className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-xl font-bold text-text-primary">Doctors queue</h1>
       <p className="mt-1 text-sm text-text-secondary">
-        Sylhet pilot — profile → extract → DRX doctor + degrees + chambers. Enable in Settings and cron processes it; Retry runs instantly here.
+        Profile → extract → DRX doctor + degrees + chambers. Server cron processes it; Retry runs instantly here.
       </p>
+
+      <div className="mt-4">
+        <QueueSwitch
+          on={settings.doctors_enabled}
+          onToggle={() => setDoctors(!settings.doctors_enabled)}
+          title={`Doctors queue ${settings.doctors_enabled ? "on" : "off"}`}
+          hint={!settings.enabled ? "Needs Processor active in Settings to run" : settings.doctors_enabled ? "Cron processes doctors (Render)" : "Doctors skipped by cron"}
+        />
+      </div>
 
       <div className="mt-4 grid grid-cols-4 gap-2 text-center">
         {(["pending", "processing", "success", "failed"] as const).map((s) => (
@@ -234,21 +229,6 @@ export default function Doctors() {
             <option value="">All specialties ({counts.pending + counts.processing + counts.success + counts.failed})</option>
             {SPECIALTIES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
-          <select value={batch} onChange={(e) => setBatch(Number(e.target.value))}
-            className="rounded-xl border border-border bg-surface-alt px-2 py-2.5 text-sm text-text-primary outline-none focus:border-primary">
-            {[10, 20, 50].map((n) => <option key={n} value={n}>{n} / run</option>)}
-          </select>
-          {!busy ? (
-            <button onClick={processNext} disabled={counts.pending === 0}
-              className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:opacity-40">
-              Process
-            </button>
-          ) : (
-            <button onClick={() => { stopRef.current = true; }}
-              className="rounded-xl bg-danger px-5 py-2.5 text-sm font-semibold text-white">
-              Stop{done > 0 ? ` (${done})` : ""}
-            </button>
-          )}
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <button onClick={() => load()} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>

@@ -1,14 +1,16 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import QueueSwitch from "@/components/QueueSwitch";
 
 type Settings = {
-  enabled: boolean; concurrency: number; tasks_per_tick: number; heartbeat_at: string | null;
+  enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean;
+  concurrency: number; tasks_per_tick: number; heartbeat_at: string | null;
   jina_keys_count?: number; jina_keys_masked?: string[];
 };
 
 export default function SettingsPage() {
-  const [s, setS] = useState<Settings>({ enabled: false, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
+  const [s, setS] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
   const [saved, setSaved] = useState(false);
   const [keysText, setKeysText] = useState("");
   const [keysTouched, setKeysTouched] = useState(false);
@@ -54,19 +56,29 @@ export default function SettingsPage() {
       <p className="mt-1 text-sm text-text-secondary">Processor configuration — read by every cron tick.</p>
 
       {/* processor switch */}
-      <div className="mt-4 flex items-center gap-3 rounded-2xl border border-border bg-surface p-4 shadow-sm">
-        <div className="flex-1">
-          <p className="text-sm font-semibold text-text-primary">Processor {s.enabled ? "active" : "paused"}</p>
-          <p className="text-xs text-text-secondary">
-            {s.enabled
+      <div className="mt-4 space-y-3">
+        <QueueSwitch
+          on={s.enabled}
+          onToggle={() => update({ enabled: !s.enabled })}
+          title={`Processor ${s.enabled ? "active" : "paused"}`}
+          hint={
+            s.enabled
               ? age != null && age < 180 ? `Last tick ${age}s ago — cron is running` : "Enabled — waiting for next cron tick"
-              : "Cron ticks do nothing while paused"}
-          </p>
-        </div>
-        <button onClick={() => update({ enabled: !s.enabled })}
-          className={`relative h-7 w-12 rounded-full transition ${s.enabled ? "bg-success" : "bg-border"}`}>
-          <span className={`absolute top-1 h-5 w-5 rounded-full bg-white shadow transition-all ${s.enabled ? "left-6" : "left-1"}`} />
-        </button>
+              : "Cron ticks do nothing while paused"
+          }
+        />
+        <QueueSwitch
+          on={s.facilities_enabled}
+          onToggle={() => update({ facilities_enabled: !s.facilities_enabled })}
+          title={`Facilities queue ${s.facilities_enabled ? "on" : "off"}`}
+          hint={s.enabled ? (s.facilities_enabled ? "Cron processes facilities" : "Facilities skipped by cron") : "Needs Processor active to run"}
+        />
+        <QueueSwitch
+          on={s.doctors_enabled}
+          onToggle={() => update({ doctors_enabled: !s.doctors_enabled })}
+          title={`Doctors queue ${s.doctors_enabled ? "on" : "off"}`}
+          hint={s.enabled ? (s.doctors_enabled ? "Cron processes doctors (Render)" : "Doctors skipped by cron") : "Needs Processor active to run"}
+        />
       </div>
 
       {/* knobs */}

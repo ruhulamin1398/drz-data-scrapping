@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { parseExtracted } from "@/lib/parse";
+import QueueSwitch from "@/components/QueueSwitch";
 
 type Group = {
   key: string; division: string; divisionId: number;
@@ -19,7 +20,7 @@ type QRow = {
 };
 
 type DoneStatus = "failed" | "success";
-type Settings = { enabled: boolean; concurrency: number; tasks_per_tick: number; heartbeat_at: string | null };
+type Settings = { enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; concurrency: number; tasks_per_tick: number; heartbeat_at: string | null };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const groupLabel = (g: Group) => `${g.division}${g.district ? ` — ${g.district}` : ""} (${g.items.length})`;
@@ -32,7 +33,7 @@ export default function Home() {
   const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState<number | "all">(20);
-  const [settings, setSettings] = useState<Settings>({ enabled: false, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
+  const [settings, setSettings] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, concurrency: 3, tasks_per_tick: 10, heartbeat_at: null });
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState<string[]>([]); // urls the browser is retrying right now
   const stopRef = useRef(false);
@@ -85,12 +86,13 @@ export default function Home() {
     if (page > totalPages) { setPage(totalPages); loadQueue(groupKey, filter, totalPages, perPage); }
   }, [totalPages]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Poll while the server processor is enabled — the page is a monitor, no tab work needed.
+  // Poll while this queue runs on the server — the page is a monitor, no tab work needed.
+  const queueRunning = settings.enabled && settings.facilities_enabled;
   useEffect(() => {
-    if (!settings.enabled) return;
+    if (!queueRunning) return;
     const t = setInterval(() => { loadQueue(); loadSettings(); }, 10000);
     return () => clearInterval(t);
-  }, [settings.enabled, groupKey, filter, page, perPage]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [queueRunning, groupKey, filter, page, perPage]); // eslint-disable-line react-hooks/exhaustive-deps
 
   async function patch(url: string, body: object) {
     await fetch("/api/queue", {
@@ -108,12 +110,11 @@ export default function Home() {
     if (!j.error) setSettings(j);
   }
 
-  // Start = enable server processing (cron picks it up within a minute).
-  // Stop = disable; in-flight server items finish, next tick goes quiet.
-  async function setEnabled(enabled: boolean) {
-    if (enabled) stopRef.current = false;
-    else stopRef.current = true; // also halts any browser retry loop
-    await saveSettings({ enabled });
+  // Facilities queue switch — same state as /settings. OFF halts any browser retry loop too.
+  async function setFacilities(on: boolean) {
+    if (!on) stopRef.current = true; // halts any browser retry loop
+    else stopRef.current = false;
+    await saveSettings({ facilities_enabled: on });
   }
 
   // Browser-driven single-item processing (manual retry only — never cron's job).
@@ -242,13 +243,22 @@ export default function Home() {
     <main className="mx-auto max-w-3xl px-6 py-8">
       <div className="flex items-center gap-3">
         <h1 className="text-xl font-bold text-text-primary">Facilities queue</h1>
-        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${settings.enabled ? "bg-success/15 text-success" : "bg-surface-alt text-text-muted"}`}>
-          {settings.enabled ? (heartbeatAge != null && heartbeatAge < 180 ? `● live (${heartbeatAge}s ago)` : "● enabled") : "○ paused"}
+        <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${queueRunning ? "bg-success/15 text-success" : "bg-surface-alt text-text-muted"}`}>
+          {queueRunning ? (heartbeatAge != null && heartbeatAge < 180 ? `● live (${heartbeatAge}s ago)` : "● enabled") : "○ paused"}
         </span>
       </div>
       <p className="mt-1 text-sm text-text-secondary">
-        Start runs the server processor via cron — no open browser needed. Concurrency lives in Settings. Retry stays manual, in this tab.
+        Server processor via cron — no open browser needed. Retry stays manual, in this tab.
       </p>
+
+      <div className="mt-4">
+        <QueueSwitch
+          on={settings.facilities_enabled}
+          onToggle={() => setFacilities(!settings.facilities_enabled)}
+          title={`Facilities queue ${settings.facilities_enabled ? "on" : "off"}`}
+          hint={!settings.enabled ? "Needs Processor active in Settings to run" : settings.facilities_enabled ? "Cron processes facilities" : "Facilities skipped by cron"}
+        />
+      </div>
 
       {/* counts */}
       <div className="mt-4 grid grid-cols-4 gap-2 text-center">
@@ -271,15 +281,6 @@ export default function Home() {
             <option value="all">All groups ({totalItems})</option>
             {groups.map((g) => <option key={g.key} value={g.key}>{groupLabel(g)}</option>)}
           </select>
-          {!settings.enabled ? (
-            <button onClick={() => setEnabled(true)}
-              className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark">
-              Start
-            </button>
-          ) : (
-            <button onClick={() => setEnabled(false)}
-              className="rounded-xl bg-danger px-5 py-2.5 text-sm font-semibold text-white">Stop</button>
-          )}
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <button onClick={() => { loadQueue(); loadSettings(); }} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>
