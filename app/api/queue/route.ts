@@ -28,7 +28,17 @@ export async function GET(req: NextRequest) {
     const counts = await pool.query(`SELECT status, COUNT(*) c FROM facility_queue ${cwhere} GROUP BY status`, cvals);
     const byStatus: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0 };
     for (const r of counts.rows) byStatus[r.status] = Number(r.c);
-    return NextResponse.json({ items: rows.rows, counts: byStatus });
+    // DB-backed per-group totals + grand total for the group dropdown.
+    // (File-based group sizes go stale when rows are added directly to the DB.)
+    const byGroup = await pool.query(`SELECT group_key, COUNT(*) c FROM facility_queue GROUP BY group_key`);
+    const countsByGroup: Record<string, number> = {};
+    let grandTotal = 0;
+    for (const r of byGroup.rows) {
+      const n = Number(r.c);
+      grandTotal += n;
+      if (r.group_key) countsByGroup[r.group_key] = n;
+    }
+    return NextResponse.json({ items: rows.rows, counts: byStatus, countsByGroup, grandTotal });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }

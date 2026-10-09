@@ -23,13 +23,14 @@ type DoneStatus = "failed" | "success";
 type Settings = { enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; concurrency: number; tasks_per_tick: number; facilities_tasks_per_tick: number; heartbeat_at: string | null };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-const groupLabel = (g: Group) => `${g.division}${g.district ? ` — ${g.district}` : ""} (${g.items.length})`;
 
 export default function Home() {
   const [groups, setGroups] = useState<Group[]>([]);
   const [groupKey, setGroupKey] = useState("");
   const [queue, setQueue] = useState<QRow[]>([]);
   const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
+  const [groupCounts, setGroupCounts] = useState<Record<string, number>>({});
+  const [grandTotal, setGrandTotal] = useState(0);
   const [filter, setFilter] = useState<"all" | "pending" | "success" | "failed">("all");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState<number | "all">(20);
@@ -40,6 +41,9 @@ export default function Home() {
 
   const isAll = groupKey === "all" || groupKey === "";
   const totalItems = groups.reduce((n, g) => n + g.items.length, 0);
+  // Dropdown counts are DB-backed (file sizes go stale on direct DB inserts).
+  const dbCount = (g: Group) => groupCounts[g.key] ?? g.items.length;
+  const allTotal = grandTotal || totalItems;
   const tabCount = filter === "all"
     ? counts.pending + counts.processing + counts.success + counts.failed
     : counts[filter];
@@ -56,7 +60,11 @@ export default function Home() {
     if (gk && gk !== "all") q.set("group", gk);
     const r = await fetch(`/api/queue?${q.toString()}`);
     const j = await r.json();
-    if (!j.error) { setQueue(j.items); setCounts(j.counts); }
+    if (!j.error) {
+      setQueue(j.items); setCounts(j.counts);
+      if (j.countsByGroup) setGroupCounts(j.countsByGroup);
+      if (typeof j.grandTotal === "number") setGrandTotal(j.grandTotal);
+    }
   }
 
   async function loadSettings() {
@@ -280,8 +288,8 @@ export default function Home() {
             className="flex-1 rounded-xl border border-border bg-surface-alt px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
             value={isAll ? "all" : groupKey} onChange={(e) => setGroupKey(e.target.value)}
           >
-            <option value="all">All groups ({totalItems})</option>
-            {groups.map((g) => <option key={g.key} value={g.key}>{groupLabel(g)}</option>)}
+            <option value="all">All groups ({allTotal})</option>
+            {groups.map((g) => <option key={g.key} value={g.key}>{g.division}{g.district ? ` — ${g.district}` : ""} ({dbCount(g)})</option>)}
           </select>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
