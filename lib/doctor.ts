@@ -42,6 +42,20 @@ function isRealPhoto(img: string): boolean {
   return !!s && /^https?:\/\//i.test(s) && !PHOTO_PLACEHOLDER.test(s);
 }
 
+// Photo from Jina markdown image refs: works from any host (Vercel's direct
+// page fetch is blocked), no extra network call. First image passing the
+// strict filter wins; SVGs are site chrome (payment/emoji icons), never photos.
+function pickPhotoFromMarkdown(md: string): string {
+  if (!md) return "";
+  const cands: string[] = [];
+  for (const m of md.matchAll(/!\[[^\]]*\]\((https?:[^)\s]+)\)/g)) cands.push(m[1].trim());
+  for (const m of md.matchAll(/https?:\S+\.(?:jpg|jpeg|png|webp)\S*/gi)) {
+    const u = m[0].replace(/[)\].,;]+$/, "");
+    if (!cands.includes(u)) cands.push(u);
+  }
+  return cands.find((u) => !/\.svg(\?|$)/i.test(u) && isRealPhoto(u)) ?? "";
+}
+
 // og:image (either attribute order), then body wp-post-image fallback.
 function pickPhoto(html: string): string {
   if (!html) return "";
@@ -173,7 +187,9 @@ Content:
     extraInformation: String(d.extraInformation ?? "").trim(),
     gender: d.gender === "male" || d.gender === "female" ? d.gender : "",
     website: validWebsite(d.website),
-    photo: validPhoto(d.photo),
+    // Markdown image refs first (present in Jina output, host-independent),
+    // model-extracted photo as fallback.
+    photo: pickPhotoFromMarkdown(md) || validPhoto(d.photo),
     chambers: Array.isArray(d.chambers) ? d.chambers.filter((x) => x && x.facilityName).map((x) => ({
       facilityName: String(x.facilityName).trim(), address: String(x.address ?? "").trim(),
       serialTime: String(x.serialTime ?? "").trim(), serialContactNumber: String(x.serialContactNumber ?? "").trim(),
