@@ -127,7 +127,7 @@ Field rules:
 - workingDays: ALL 7 keys Sunday..Saturday, each an array of ["start","end"] in 24h "HH:MM" converted from serialTime. Convert: 3pm->15:00, 5pm->17:00, 10pm->22:00, 10am->10:00, 8pm->20:00, "10:30am"->"10:30", "7:30pm"->"19:30". Closed-day words map: Friday/Fri, Saturday/Sat, Thursday/Thu, Sunday/Sun, Monday/Mon, Tuesday/Tue, Wednesday/Wed. "(Closed: Friday)" empties Friday only; "(Closed: Sat & Friday)" empties both; "(Closed: Thu & Friday)" empties both; "(Closed: Friday)" keeps Saturday. Days with no hours mentioned -> []. Values are ARRAYS OF STRINGS ONLY — never booleans, never null. [] (no chamber blocks at all) -> "chambers": [].
 
 Department context: slug "${deptSlug}", title "${deptName}".
-Note: an "Acupuncture Specialist" profile belongs to Physical Medicine.
+Specialty mapping by meaning and purpose: an "Acupuncture Specialist" (or any acupuncture-related specialty) is a form of physical medicine / rehabilitation therapy — it must map to the Physical Medicine department, not to any other specialty.
 ${cardText ? `Card list entry (degrees line, may contain the BMDC Reg. No):\n` + cardText + `\n` : ""}
 Study these two complete worked examples first — your output must follow the same shape and conventions:
 ${formatExamples()}
@@ -137,7 +137,7 @@ Now extract from the following real page. Begin your response with { and end wit
   const promptLean =
 `Extract doctor info from the Jina markdown below. Output ONLY one JSON object, no fences, no commentary. Missing values are "" or [].
 Keys: name (full name WITH title, REQUIRED), designation (job title, REQUIRED, Title Case), specialityArea (X Specialist line), bmdcRegNo (from BMDC Reg. No line), gender (male/female from He-She pronouns), website (doctor's own external URL only), degrees (split qualification commas into {title,subject,institution,country}), workingIn (REQUIRED, lowercase "designation, ${deptSlug}, institution" with exactly two commas, no commas inside segments), phones (appointment numbers verbatim), email, biography (always ""), extraInformation (full descriptive paragraph), chambers ([{facilityName, address, serialTime verbatim, serialContactNumber, workingDays with all 7 day keys Sunday..Saturday mapping to [start,end] 24h HH:MM arrays, closed days []}]).
-Dept: slug "${deptSlug}", title "${deptName}". An "Acupuncture Specialist" profile belongs to Physical Medicine.
+Dept: slug "${deptSlug}", title "${deptName}". Specialty mapping by meaning and purpose: an "Acupuncture Specialist" (or any acupuncture-related specialty) is a form of physical medicine / rehabilitation therapy — it must map to the Physical Medicine department, not to any other specialty.
 ${cardText ? `Card entry:\n` + cardText + `\n` : ""}
 Content:
 ` + md;
@@ -469,21 +469,6 @@ const SYNONYMS: Record<string, string> = {
   heart: "cardio",
 };
 
-// Explicit specialty → department pins. Keyword scoring cannot relate these
-// (no shared words), so they bypass scoring: Acupuncture is practiced under
-// Physical Medicine.
-const SPECIALTY_DEPT_ALIASES: Record<string, string> = {
-  acupuncture: "physical-medicine-specialist",
-};
-
-export function aliasDepartmentSlug(specialityArea: string, designation: string): string | null {
-  const words = `${specialityArea ?? ""} ${designation ?? ""}`.toLowerCase().split(/[^a-z]+/);
-  for (const [key, slug] of Object.entries(SPECIALTY_DEPT_ALIASES)) {
-    if (words.includes(key)) return slug;
-  }
-  return null;
-}
-
 function tokensOf(s: string): string[] {
   return s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 1);
 }
@@ -554,13 +539,6 @@ export async function resolveDepartmentIds(
   if (!res.ok) throw new Error(`departments lookup failed: ${res.status}`);
   const json = await res.json().catch(() => null);
   const items: { id: string; slug: string; name: string }[] = json?.data?.items ?? [];
-  // Pinned specialty aliases first (e.g. acupuncture → physical medicine).
-  const aliasSlug = aliasDepartmentSlug(specialityArea ?? "", designation ?? "");
-  if (aliasSlug) {
-    const dept = items.find((d) => d.slug === aliasSlug);
-    if (dept) return { slug: dept.slug, ids: [dept.id] };
-    // Alias slug missing on backend — fall through to keyword scoring.
-  }
   const toks = canonical(tokensOf(`${specialityArea ?? ""} ${designation ?? ""}`), true, false);
   if (!toks.length) {
     throw new Error("specialty could not be resolved from profile — set specialty_slug manually");
