@@ -298,9 +298,10 @@ export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated
     phones: d.phones.length ? d.phones : undefined,
     email: d.email && /@/.test(d.email) ? d.email : undefined,
     gender: d.gender || undefined, website: d.website || undefined,
-    // Plain `photo` URL (saved as-is). `photoUrl` (server-side download) 500s
-    // on the backend as of 2026-09-11 — switch when backend fixes it.
-    photo: d.photo || undefined,
+    // `photoUrl`: backend downloads + re-hosts to R2 (verified 2026-10-10 —
+    // the old 2026-09-11 500 is fixed). Never send `photo` with an external
+    // URL (that hotlinks); `photo` is only for already-hosted (R2) URLs.
+    photoUrl: d.photo || undefined,
     extraInformation: extra || undefined,
   };
   let drxId: string; let updated = false;
