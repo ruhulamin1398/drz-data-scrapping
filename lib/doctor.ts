@@ -30,26 +30,56 @@ export async function fetchDoctorProfile(url: string): Promise<string> {
 }
 
 // Step 1b: profile photo via og:image from raw HTML (cheap, no Jina cost).
-// Returns "" when absent or when it looks like a site asset (logo/icon/placeholder).
-export async function fetchDoctorPhoto(url: string): Promise<string> {
-  try {
-    const ctrl = new AbortController();
-    const t = setTimeout(() => ctrl.abort(), 20000);
-    const res = await fetch(url, {
-      signal: ctrl.signal,
-      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" },
-    });
-    clearTimeout(t);
-    if (!res.ok) return "";
-    const html = await res.text();
-    const m = /<meta\s+property="og:image"\s+content="([^"]+)"/i.exec(html);
-    const img = (m?.[1] ?? "").trim();
-    if (!img || !/^https?:\/\//i.test(img)) return "";
-    if (/logo|icon|placeholder|default|banner|favicon/i.test(img)) return "";
-    return img;
-  } catch {
-    return "";
+// Retried (3 attempts, growing backoff): one transient fetch miss used to leave
+// the backend record photo-less forever. Still NON-FATAL — many doctors genuinely
+// have no photo, so "" just means "no photo" and the row succeeds regardless.
+// Retries happen only when the page fetch itself fails; a loaded page with no
+// usable photo is trusted as-is (refetching it would not help).
+const PHOTO_PLACEHOLDER = /dr-male|dr-female|doctor-bd|logo|icon|placeholder|default|banner|favicon/i;
+
+function isRealPhoto(img: string): boolean {
+  const s = (img ?? "").trim();
+  return !!s && /^https?:\/\//i.test(s) && !PHOTO_PLACEHOLDER.test(s);
+}
+
+// og:image (either attribute order), then body wp-post-image fallback.
+function pickPhoto(html: string): string {
+  if (!html) return "";
+  const cands: string[] = [];
+  const og1 = /<meta\s+property=["']og:image["']\s+content=["']([^"']+)["']/i.exec(html)?.[1];
+  if (og1) cands.push(og1.trim());
+  const og2 = /<meta\s+content=["']([^"']+)["']\s+property=["']og:image["']/i.exec(html)?.[1];
+  if (og2 && og2.trim() !== og1?.trim()) cands.push(og2.trim());
+  for (const tag of html.match(/<img\b[^>]*>/gi) ?? []) {
+    if (!/wp-post-image/i.test(tag)) continue;
+    const src = /src=["']([^"']+)["']/i.exec(tag)?.[1];
+    if (src) cands.push(src.trim());
   }
+  return cands.find(isRealPhoto) ?? "";
+}
+
+export async function fetchDoctorPhoto(url: string): Promise<string> {
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    let html = "";
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 20000);
+      try {
+        const res = await fetch(url, {
+          signal: ctrl.signal,
+          headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36" },
+        });
+        if (res.ok) html = await res.text();
+      } finally {
+        clearTimeout(t);
+      }
+    } catch {
+      // transient network/abort — back off and retry below
+    }
+    if (html) return pickPhoto(html);
+    if (attempt < 3) await new Promise((r) => setTimeout(r, 1000 * attempt));
+  }
+  return "";
 }
 
 // Step 2: fixed-prompt JSON extraction via nex-router (gemini, temperature 0).
@@ -207,9 +237,7 @@ function validWebsite(w: unknown): string {
 
 function validPhoto(p: unknown): string {
   const s = String(p ?? "").trim();
-  if (!/^https?:\/\//i.test(s)) return "";
-  if (/logo|icon|placeholder|default|banner|favicon/i.test(s)) return "";
-  return s;
+  return isRealPhoto(s) ? s : "";
 }
 
 function looksJson(s: string): boolean {
