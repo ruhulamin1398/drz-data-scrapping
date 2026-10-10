@@ -118,6 +118,13 @@ export default function Doctors() {
       const fj = await f.json();
       if (!f.ok) throw new Error(fj.error || `fetch ${f.status}`);
 
+      // Photo scrapes raw HTML (og:image) — independent of markdown, non-fatal.
+      const p = await fetch("/api/doctors/photo", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url: q.source_url }),
+      });
+      const pj = await p.json().catch(() => ({ photo: "" }));
+
       const e = await fetch("/api/doctors/extract", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ markdown: fj.markdown, specialty: q.specialty_slug, card: q.card_text }),
@@ -132,6 +139,7 @@ export default function Doctors() {
         body: JSON.stringify({
           doctor: ej.doctor, departmentIds: deptIds,
           sourceUrl: q.source_url, drxId: q.drx_id ?? undefined,
+          photo: pj.photo || undefined,
         }),
       });
       const dj = await d.json();

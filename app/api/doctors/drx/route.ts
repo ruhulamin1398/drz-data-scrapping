@@ -1,16 +1,17 @@
 import { NextRequest, NextResponse } from "next/server";
 import { pushDoctor } from "@/lib/doctor";
 
-// POST { doctor, departmentIds, sourceUrl, drxId? } — creates the DRX doctor,
+// POST { doctor, departmentIds, sourceUrl, drxId?, photo? } — creates the DRX doctor,
 // posts each degree with doctorId, chambers go into extraInformation as text.
 // With drxId: PATCHes in place (no duplicates).
+// photo (scraped og:image from the browser path) wins over the model's photo.
 export async function POST(req: NextRequest) {
   try {
     const b = await req.json();
     if (!b.doctor || !b.departmentIds?.length || !b.sourceUrl) {
       return NextResponse.json({ error: "doctor + departmentIds + sourceUrl required" }, { status: 400 });
     }
-    const r = await pushDoctor({ ...b.doctor, departmentIds: b.departmentIds, sourceUrl: b.sourceUrl, drxId: b.drxId });
+    const r = await pushDoctor({ ...b.doctor, photo: b.photo || b.doctor.photo, departmentIds: b.departmentIds, sourceUrl: b.sourceUrl, drxId: b.drxId });
     return NextResponse.json(r.updated
       ? { drxId: r.drxId, updated: true, degrees: r.degrees, chambers: r.chambers }
       : { drxId: r.drxId, degrees: r.degrees, chambers: r.chambers });
