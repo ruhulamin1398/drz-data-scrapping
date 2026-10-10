@@ -21,21 +21,24 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     if (!q.drx_id) return NextResponse.json({ error: "drxId required (push first via /doctors)" }, { status: 400 });
     await pool.query(`UPDATE doctor_update_runs SET status='processing', locked_at=NULL, attempts=attempts+1, updated_at=now() WHERE id=$1`, [runId]);
     try {
+      const skipFlag = (q.options ?? {}).skipIfPhotoExists !== false;
       const outcome = await updatePhoto(
         { doctorQueueId: q.doctor_queue_id, drxId: q.drx_id, sourceUrl: q.source_url },
-        { skipIfPhotoExists: (q.options ?? {}).skipIfPhotoExists !== false }
+        { skipIfPhotoExists: skipFlag }
       );
       if (outcome.action === "skipped") {
+        const note = `skipped: ${outcome.reason} | prev: ${outcome.prevPhoto || "none"} | skipIfExists=${skipFlag ? "on" : "off"}`;
         await pool.query(
-          `UPDATE doctor_update_runs SET status='skipped', result='skipped', prev_photo=$2, fail_reason=$3, finished_at=now(), updated_at=now() WHERE id=$1`,
-          [runId, outcome.prevPhoto || null, outcome.reason.slice(0, 300)]
+          `UPDATE doctor_update_runs SET status='skipped', result='skipped', prev_photo=$2, fail_reason=$3, note=$4, finished_at=now(), updated_at=now() WHERE id=$1`,
+          [runId, outcome.prevPhoto || null, outcome.reason.slice(0, 300), note.slice(0, 1000)]
         );
         return NextResponse.json({ ok: true, result: "skipped", reason: outcome.reason });
       }
       await applyPhoto(q.drx_id, outcome.newPhoto);
+      const note = `photo ${outcome.prevPhoto || "none"} → ${outcome.newPhoto} | skipIfExists=${skipFlag ? "on" : "off"}`;
       await pool.query(
-        `UPDATE doctor_update_runs SET status='success', result='updated', prev_photo=$2, new_photo=$3, fail_reason=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
-        [runId, outcome.prevPhoto || null, outcome.newPhoto]
+        `UPDATE doctor_update_runs SET status='success', result='updated', prev_photo=$2, new_photo=$3, fail_reason=NULL, note=$4, finished_at=now(), updated_at=now() WHERE id=$1`,
+        [runId, outcome.prevPhoto || null, outcome.newPhoto, note.slice(0, 1000)]
       );
       return NextResponse.json({ ok: true, result: "updated" });
     } catch (err) {

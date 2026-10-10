@@ -35,6 +35,14 @@ await c.query(`ALTER TABLE doctor_update_runs DROP CONSTRAINT IF EXISTS doctor_u
 await c.query(`ALTER TABLE doctor_update_runs ADD CONSTRAINT doctor_update_runs_status_check CHECK (status IN ('pending','processing','success','failed','skipped'))`).catch(() => {});
 // Backfill pilot rows: success+skipped → first-class skipped status.
 await c.query(`UPDATE doctor_update_runs SET status='skipped', updated_at=now() WHERE status='success' AND result='skipped'`).catch(() => {});
+// Change note column: what was there before, what was added, options used + manual remarks.
+await c.query(`ALTER TABLE doctor_update_runs ADD COLUMN IF NOT EXISTS note TEXT`);
+// Backfill a summary note for already-finished rows missing one.
+await c.query(`UPDATE doctor_update_runs SET note = CASE
+  WHEN result='updated' THEN 'photo ' || COALESCE(prev_photo,'none') || ' → ' || COALESCE(new_photo,'')
+  WHEN result='skipped' THEN 'skipped: ' || COALESCE(fail_reason,'already up to date')
+  ELSE note END,
+  updated_at=now() WHERE note IS NULL AND status IN ('success','failed','skipped')`).catch(() => {});
 // One active run per doctor+utility; unlimited finished history.
 await c.query(`DROP INDEX IF EXISTS doctor_update_runs_active_uniq`);
 await c.query(`CREATE UNIQUE INDEX IF NOT EXISTS doctor_update_runs_active_uniq ON doctor_update_runs (doctor_queue_id, type) WHERE status IN ('pending','processing')`);

@@ -10,7 +10,8 @@ type Run = {
   options: { skipIfPhotoExists?: boolean };
   result: "updated" | "skipped" | "failed" | null;
   prev_photo: string | null; new_photo: string | null;
-  fail_reason: string | null;
+  fail_reason: string | null; note: string | null;
+  finished_at: string | null;
 };
 
 type Cand = { id: number; name: string | null; source_url: string; drx_id: string | null; specialty_slug: string | null };
@@ -26,6 +27,10 @@ export default function DoctorUpdates() {
   const [busy, setBusy] = useState(false);
   const [running, setRunning] = useState<number[]>([]);
   const [settings, setSettings] = useState({ enabled: false, doctor_updates_enabled: true, doctor_updates_tasks_per_tick: 10 });
+  const [viewId, setViewId] = useState<number | null>(null);
+  const [editId, setEditId] = useState<number | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [skipDraft, setSkipDraft] = useState(true);
   const queueRunning = settings.enabled && settings.doctor_updates_enabled;
 
   async function loadRuns(f = filter) {
@@ -118,6 +123,37 @@ export default function DoctorUpdates() {
     loadRuns();
   }
 
+  function startEdit(r: Run) {
+    setViewId(null);
+    setEditId(r.id);
+    setNoteDraft(r.note ?? "");
+    setSkipDraft(r.options?.skipIfPhotoExists !== false);
+  }
+
+  async function saveEdit(r: Run) {
+    const body: { note?: string; skipIfPhotoExists?: boolean } = {};
+    if (noteDraft !== (r.note ?? "")) body.note = noteDraft;
+    if (r.status === "pending" && skipDraft !== (r.options?.skipIfPhotoExists !== false)) body.skipIfPhotoExists = skipDraft;
+    if (!Object.keys(body).length) { setEditId(null); return; }
+    const res = await fetch(`/api/doctors/updates/${r.id}`, {
+      method: "PATCH", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    const j = await res.json().catch(() => ({}));
+    setMsg(res.ok ? `saved #${r.id}` : j.error);
+    setEditId(null);
+    loadRuns();
+  }
+
+  async function delRun(id: number) {
+    if (!confirm(`Delete update run #${id}? History for this run is removed.`)) return;
+    const res = await fetch(`/api/doctors/updates/${id}`, { method: "DELETE" });
+    const j = await res.json().catch(() => ({}));
+    setMsg(res.ok ? `deleted #${id}` : j.error);
+    if (viewId === id) setViewId(null);
+    loadRuns();
+  }
+
   const toggle = (id: number) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
   // While this queue runs on the server this page is a monitor — refresh as it works.
@@ -204,19 +240,98 @@ export default function DoctorUpdates() {
             <div className="flex items-center gap-2 text-sm">
               <span className="font-mono text-xs text-text-secondary">#{r.id}</span>
               <span className="min-w-0 flex-1 truncate font-medium text-text-primary">{r.doctor_name ?? `queue #${r.doctor_queue_id}`}</span>
+              <a href={r.source_url} target="_blank" rel="noopener noreferrer" title="Open scraped source page"
+                className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-primary hover:text-text-primary">↗</a>
+              {r.drx_id && (
+                <a href={`https://www.doctorzonebd.com/doctors/${r.drx_id}`} target="_blank" rel="noopener noreferrer" title="Open DoctorZone page to compare"
+                  className="rounded-lg border border-border px-2 py-1 text-xs font-medium text-text-secondary hover:border-primary hover:text-text-primary">DZ ↗</a>
+              )}
               <span className="rounded-md bg-surface-alt px-2 py-0.5 text-[11px]">{r.type}</span>
               <span className="rounded-full bg-surface-alt px-2.5 py-1 text-[11px] font-semibold">{r.status}{r.result ? `/${r.result}` : ""}</span>
-              <button onClick={() => runNow(r.id)} disabled={running.includes(r.id) || r.status === "processing"}
-                className="rounded-lg border border-border px-2 py-1 text-xs disabled:opacity-40">▶ Run</button>
-              {(r.status === "failed" || r.status === "success" || r.status === "skipped") && (
-                <button onClick={() => retryHistory(r.id)} className="rounded-lg border border-border px-2 py-1 text-xs">↻ Re-enqueue</button>
-              )}
             </div>
-            {r.fail_reason && <p className="mt-1 font-mono text-[11px] text-danger">{r.fail_reason}</p>}
-            {(r.prev_photo || r.new_photo) && (
-              <p className="mt-1 truncate font-mono text-[11px] text-text-secondary">
-                {r.prev_photo ? "had photo" : "no prev"} → {r.new_photo ? "new photo" : "—"} {r.options?.skipIfPhotoExists === false ? "(force)" : ""}
-              </p>
+            <div className="mt-1.5 flex flex-wrap items-center gap-1.5 text-xs">
+              {r.drx_id ? (
+                <a href={`https://www.doctorzonebd.com/doctors/${r.drx_id}`} target="_blank" rel="noopener noreferrer" title={r.drx_id}
+                  className="rounded-md bg-success/15 px-2 py-1 font-mono text-[11px] font-bold text-success hover:underline">
+                  DRX #{r.drx_id.slice(0, 8)}
+                </a>
+              ) : (
+                <span className="rounded-md bg-surface-alt px-2 py-1 font-mono text-[11px] text-text-muted">no DRX id</span>
+              )}
+              <span className="font-mono text-[11px] text-text-muted">queue #{r.doctor_queue_id}</span>
+              <span className="ml-auto flex gap-1">
+                <button onClick={() => runNow(r.id)} disabled={running.includes(r.id) || r.status === "processing"}
+                  title="Run this update now in this tab"
+                  className="rounded-lg border border-border px-2 py-1 font-medium text-text-secondary hover:border-primary disabled:opacity-40">▶ Run</button>
+                <button onClick={() => { setEditId(null); setViewId(viewId === r.id ? null : r.id); }}
+                  className="rounded-lg border border-border px-2 py-1 font-medium text-text-secondary hover:border-primary">View</button>
+                <button onClick={() => (editId === r.id ? setEditId(null) : startEdit(r))}
+                  className="rounded-lg border border-border px-2 py-1 font-medium text-text-secondary hover:border-primary">Edit</button>
+                <button onClick={() => delRun(r.id)} disabled={r.status === "processing"}
+                  className="rounded-lg border border-border px-2 py-1 font-medium text-danger hover:border-danger disabled:opacity-40">Delete</button>
+                {(r.status === "failed" || r.status === "success" || r.status === "skipped") && (
+                  <button onClick={() => retryHistory(r.id)}
+                    className="rounded-lg border border-border px-2 py-1 font-medium text-text-secondary hover:border-primary">↻ Re-enqueue</button>
+                )}
+              </span>
+            </div>
+            {r.note && editId !== r.id && (
+              <p className="mt-1.5 truncate text-xs text-text-secondary" title={r.note}>📝 {r.note}</p>
+            )}
+            {r.fail_reason && r.status === "failed" && (
+              <p className="mt-1 font-mono text-[11px] text-danger">{r.fail_reason}</p>
+            )}
+            {viewId === r.id && (
+              <div className="mt-2 rounded-xl bg-surface-alt p-3 text-xs">
+                <div className="flex gap-3">
+                  {r.prev_photo && (
+                    <div className="flex-1">
+                      <p className="mb-1 font-semibold uppercase tracking-wide text-text-secondary">Before</p>
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={r.prev_photo} alt="previous photo" className="h-24 w-24 rounded-lg border border-border object-cover" />
+                      <p className="mt-1 break-all font-mono text-[10px] text-text-muted">{r.prev_photo}</p>
+                    </div>
+                  )}
+                  <div className="flex-1">
+                    <p className="mb-1 font-semibold uppercase tracking-wide text-text-secondary">{r.new_photo ? "After" : "Photo"}</p>
+                    {r.new_photo ? (
+                      <>
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img src={r.new_photo} alt="new photo" className="h-24 w-24 rounded-lg border border-border object-cover" />
+                        <p className="mt-1 break-all font-mono text-[10px] text-text-muted">{r.new_photo}</p>
+                      </>
+                    ) : (
+                      <p className="text-text-secondary">{r.prev_photo ? "unchanged (skipped)" : "no photo resolved"}</p>
+                    )}
+                  </div>
+                </div>
+                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-text-secondary">
+                  <dt>skipIfExists</dt><dd className="text-text-primary">{r.options?.skipIfPhotoExists === false ? "off (force)" : "on"}</dd>
+                  <dt>result</dt><dd className="text-text-primary">{r.result ?? "—"}</dd>
+                  <dt>finished</dt><dd className="text-text-primary">{r.finished_at ?? "—"}</dd>
+                  <dt>source</dt><dd className="break-all">{r.source_url}</dd>
+                </dl>
+                {r.note && <p className="mt-2 text-text-primary">📝 {r.note}</p>}
+                {r.fail_reason && <p className="mt-1 font-mono text-[11px] text-danger">{r.fail_reason}</p>}
+              </div>
+            )}
+            {editId === r.id && (
+              <div className="mt-2 rounded-xl bg-surface-alt p-3 text-xs">
+                <label className="block font-semibold uppercase tracking-wide text-text-secondary">Note</label>
+                <textarea value={noteDraft} onChange={(e) => setNoteDraft(e.target.value)} rows={2} maxLength={1000}
+                  placeholder="What was there before, what changed, other remarks…"
+                  className="mt-1 w-full rounded-xl border border-border bg-surface px-3 py-2 text-sm text-text-primary outline-none focus:border-primary" />
+                {r.status === "pending" && (
+                  <label className="mt-2 flex items-center gap-2 text-sm text-text-primary">
+                    <input type="checkbox" checked={skipDraft} onChange={(e) => setSkipDraft(e.target.checked)} />
+                    Skip if photo exists
+                  </label>
+                )}
+                <div className="mt-2 flex gap-2">
+                  <button onClick={() => saveEdit(r)} className="rounded-lg bg-primary px-3 py-1.5 font-semibold text-white">Save</button>
+                  <button onClick={() => setEditId(null)} className="rounded-lg border border-border px-3 py-1.5 text-text-secondary">Cancel</button>
+                </div>
+              </div>
             )}
           </div>
         ))}

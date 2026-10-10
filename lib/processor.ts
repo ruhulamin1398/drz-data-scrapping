@@ -224,23 +224,26 @@ async function processUpdateRun(pool: Pool, q: UpdateRunRow): Promise<boolean> {
     if (q.type !== "photo") throw new Error(`unknown update type: ${q.type}`);
     if (!q.drx_id) throw new Error("drxId required for photo update (push first via /doctors)");
     const opts = (q.options ?? {}) as PhotoOptions;
+    const skipFlag = opts.skipIfPhotoExists !== false;
     const outcome = await updatePhoto(
       { doctorQueueId: q.doctor_queue_id, drxId: q.drx_id, sourceUrl: q.source_url },
-      { skipIfPhotoExists: opts.skipIfPhotoExists !== false }
+      { skipIfPhotoExists: skipFlag }
     );
     if (outcome.action === "skipped") {
+      const note = `skipped: ${outcome.reason} | prev: ${outcome.prevPhoto || "none"} | skipIfExists=${skipFlag ? "on" : "off"}`;
       await pool.query(
         `UPDATE doctor_update_runs SET status='skipped', result='skipped',
-          prev_photo=$2, fail_reason=$3, finished_at=now(), updated_at=now() WHERE id=$1`,
-        [q.id, outcome.prevPhoto || null, outcome.reason.slice(0, 300)]
+          prev_photo=$2, fail_reason=$3, note=$4, finished_at=now(), updated_at=now() WHERE id=$1`,
+        [q.id, outcome.prevPhoto || null, outcome.reason.slice(0, 300), note.slice(0, 1000)]
       );
       return true;
     }
     await applyPhoto(q.drx_id, outcome.newPhoto);
+    const note = `photo ${outcome.prevPhoto || "none"} → ${outcome.newPhoto} | skipIfExists=${skipFlag ? "on" : "off"}`;
     await pool.query(
       `UPDATE doctor_update_runs SET status='success', result='updated',
-        prev_photo=$2, new_photo=$3, fail_reason=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
-      [q.id, outcome.prevPhoto || null, outcome.newPhoto]
+        prev_photo=$2, new_photo=$3, fail_reason=NULL, note=$4, finished_at=now(), updated_at=now() WHERE id=$1`,
+      [q.id, outcome.prevPhoto || null, outcome.newPhoto, note.slice(0, 1000)]
     );
     return true;
   } catch (err) {

@@ -32,4 +32,5 @@ export type UpdateRunRow = {
   new_photo: string | null;
   attempts: number;
   fail_reason: string | null;
+  note: string | null;
 };
