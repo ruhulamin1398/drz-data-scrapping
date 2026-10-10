@@ -51,7 +51,7 @@ export async function PATCH(req: NextRequest) {
         fail_reason=$5,
         specialty_slug=COALESCE($6,specialty_slug),
         specialty_slugs = CASE WHEN $6 IS NOT NULL AND specialty_slugs='{}' THEN ARRAY[$6] ELSE specialty_slugs END,
-        department_ids = CASE WHEN $8 THEN $7
+        department_ids = CASE WHEN $8::boolean THEN $7::text[]
           WHEN $7 IS NOT NULL AND department_ids='{}' THEN $7 ELSE department_ids END,
         city=COALESCE($9,city),
         locked_at = CASE WHEN $2='processing' THEN NULL ELSE locked_at END,
