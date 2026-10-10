@@ -1,11 +1,12 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 
 type Run = {
   id: number; doctor_queue_id: number; doctor_name: string | null;
   drx_id: string | null; source_url: string; type: "photo";
-  status: "pending" | "processing" | "success" | "failed";
+  status: "pending" | "processing" | "success" | "failed" | "skipped";
   options: { skipIfPhotoExists?: boolean };
   result: "updated" | "skipped" | "failed" | null;
   prev_photo: string | null; new_photo: string | null;
@@ -16,14 +17,16 @@ type Cand = { id: number; name: string | null; source_url: string; drx_id: strin
 
 export default function DoctorUpdates() {
   const [runs, setRuns] = useState<Run[]>([]);
-  const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
-  const [filter, setFilter] = useState<"all" | "pending" | "processing" | "success" | "failed">("all");
+  const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0, skipped: 0 });
+  const [filter, setFilter] = useState<"all" | "pending" | "processing" | "success" | "failed" | "skipped">("all");
   const [cands, setCands] = useState<Cand[]>([]);
   const [sel, setSel] = useState<number[]>([]);
   const [skip, setSkip] = useState(true);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
   const [running, setRunning] = useState<number[]>([]);
+  const [settings, setSettings] = useState({ enabled: false, doctor_updates_enabled: true, doctor_updates_tasks_per_tick: 10 });
+  const queueRunning = settings.enabled && settings.doctor_updates_enabled;
 
   async function loadRuns(f = filter) {
     const q = new URLSearchParams({ limit: "100" });
@@ -41,7 +44,37 @@ export default function DoctorUpdates() {
     if (!j.error) setCands((j.items ?? []).filter((x: Cand) => x.drx_id));
   }
 
-  useEffect(() => { loadRuns("all"); loadCands(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { loadRuns("all"); loadCands(); loadSettings(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  async function loadSettings() {
+    try {
+      const r = await fetch("/api/settings");
+      const j = await r.json();
+      if (!j.error) setSettings({ enabled: !!j.enabled, doctor_updates_enabled: j.doctor_updates_enabled !== false, doctor_updates_tasks_per_tick: j.doctor_updates_tasks_per_tick ?? 10 });
+    } catch { /* ignore */ }
+  }
+
+  async function saveTasksPerTick(n: number) {
+    try {
+      const r = await fetch("/api/settings", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doctor_updates_tasks_per_tick: n }),
+      });
+      const j = await r.json();
+      if (!j.error) setSettings({ enabled: !!j.enabled, doctor_updates_enabled: j.doctor_updates_enabled !== false, doctor_updates_tasks_per_tick: j.doctor_updates_tasks_per_tick ?? n });
+    } catch { /* ignore */ }
+  }
+
+  async function setUpdates(on: boolean) {
+    try {
+      const r = await fetch("/api/settings", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ doctor_updates_enabled: on }),
+      });
+      const j = await r.json();
+      if (!j.error) setSettings({ enabled: !!j.enabled, doctor_updates_enabled: j.doctor_updates_enabled !== false, doctor_updates_tasks_per_tick: j.doctor_updates_tasks_per_tick ?? 10 });
+    } catch { /* ignore */ }
+  }
 
   async function enqueueSelected() {
     if (!sel.length) return;
@@ -87,12 +120,30 @@ export default function DoctorUpdates() {
 
   const toggle = (id: number) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
+  // While this queue runs on the server this page is a monitor — refresh as it works.
+  useEffect(() => {
+    if (!queueRunning) return;
+    const t = setInterval(() => { loadRuns(); loadSettings(); }, 10000);
+    return () => clearInterval(t);
+  }, [queueRunning]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <main className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-xl font-bold text-text-primary">Doctor updates — photo</h1>
       <p className="mt-1 text-sm text-text-secondary">
         Independent queue. Pick utility + option, enqueue to pending, cron (Render) or Run-now processes. History kept per run.
       </p>
+
+      <div className="mt-4">
+        <QueueSwitch
+          on={settings.doctor_updates_enabled}
+          onToggle={() => setUpdates(!settings.doctor_updates_enabled)}
+          title={`Doctor updates queue ${settings.doctor_updates_enabled ? "on" : "off"}`}
+          hint={!settings.enabled ? "Needs Processor active in Settings to run" : settings.doctor_updates_enabled ? "Cron processes photo updates (Render)" : "Photo updates skipped by cron"}
+        >
+          <TasksPerTickInput value={settings.doctor_updates_tasks_per_tick} onChange={saveTasksPerTick} />
+        </QueueSwitch>
+      </div>
 
       <div className="mt-4 rounded-2xl border border-border bg-surface p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
@@ -129,8 +180,8 @@ export default function DoctorUpdates() {
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-4 gap-2 text-center">
-        {(["pending", "processing", "success", "failed"] as const).map((s) => (
+      <div className="mt-4 grid grid-cols-5 gap-2 text-center">
+        {(["pending", "processing", "success", "skipped", "failed"] as const).map((s) => (
           <div key={s} className="rounded-xl border border-border bg-surface px-2 py-2.5">
             <p className="text-lg font-bold text-text-primary">{counts[s]}</p>
             <p className="text-[11px] capitalize text-text-secondary">{s}</p>
@@ -139,7 +190,7 @@ export default function DoctorUpdates() {
       </div>
 
       <div className="mt-4 flex gap-1 rounded-xl bg-surface-alt p-1 text-sm">
-        {(["all", "pending", "processing", "success", "failed"] as const).map((f) => (
+        {(["all", "pending", "processing", "success", "skipped", "failed"] as const).map((f) => (
           <button key={f} onClick={() => { setFilter(f); loadRuns(f); }}
             className={`flex-1 rounded-lg px-3 py-2 font-medium capitalize ${filter === f ? "bg-surface text-text-primary shadow-sm" : "text-text-secondary"}`}>
             {f}
@@ -157,7 +208,7 @@ export default function DoctorUpdates() {
               <span className="rounded-full bg-surface-alt px-2.5 py-1 text-[11px] font-semibold">{r.status}{r.result ? `/${r.result}` : ""}</span>
               <button onClick={() => runNow(r.id)} disabled={running.includes(r.id) || r.status === "processing"}
                 className="rounded-lg border border-border px-2 py-1 text-xs disabled:opacity-40">▶ Run</button>
-              {(r.status === "failed" || r.status === "success") && (
+              {(r.status === "failed" || r.status === "success" || r.status === "skipped") && (
                 <button onClick={() => retryHistory(r.id)} className="rounded-lg border border-border px-2 py-1 text-xs">↻ Re-enqueue</button>
               )}
             </div>

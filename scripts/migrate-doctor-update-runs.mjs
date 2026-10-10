@@ -18,7 +18,7 @@ CREATE TABLE IF NOT EXISTS doctor_update_runs (
   drx_id TEXT,
   source_url TEXT NOT NULL,
   type TEXT NOT NULL DEFAULT 'photo' CHECK (type IN ('photo')),
-  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','success','failed')),
+  status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','success','failed','skipped')),
   options JSONB NOT NULL DEFAULT '{"skipIfPhotoExists": true}',
   result TEXT CHECK (result IN ('updated','skipped','failed')),
   prev_photo TEXT,
@@ -30,6 +30,11 @@ CREATE TABLE IF NOT EXISTS doctor_update_runs (
   updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   finished_at TIMESTAMPTZ
 );`);
+// Existing tables keep the old 4-value CHECK — widen it idempotently.
+await c.query(`ALTER TABLE doctor_update_runs DROP CONSTRAINT IF EXISTS doctor_update_runs_status_check`);
+await c.query(`ALTER TABLE doctor_update_runs ADD CONSTRAINT doctor_update_runs_status_check CHECK (status IN ('pending','processing','success','failed','skipped'))`).catch(() => {});
+// Backfill pilot rows: success+skipped → first-class skipped status.
+await c.query(`UPDATE doctor_update_runs SET status='skipped', updated_at=now() WHERE status='success' AND result='skipped'`).catch(() => {});
 // One active run per doctor+utility; unlimited finished history.
 await c.query(`DROP INDEX IF EXISTS doctor_update_runs_active_uniq`);
 await c.query(`CREATE UNIQUE INDEX IF NOT EXISTS doctor_update_runs_active_uniq ON doctor_update_runs (doctor_queue_id, type) WHERE status IN ('pending','processing')`);

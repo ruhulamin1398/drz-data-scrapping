@@ -17,7 +17,7 @@ export type PhotoOutcome =
   | { action: "skipped"; reason: string; prevPhoto: string }
   | { action: "update"; prevPhoto: string; newPhoto: string };
 
-export type UpdateRunStatus = "pending" | "processing" | "success" | "failed";
+export type UpdateRunStatus = "pending" | "processing" | "success" | "failed" | "skipped";
 
 export type UpdateRunRow = {
   id: number;

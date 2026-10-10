@@ -27,7 +27,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       );
       if (outcome.action === "skipped") {
         await pool.query(
-          `UPDATE doctor_update_runs SET status='success', result='skipped', prev_photo=$2, fail_reason=$3, finished_at=now(), updated_at=now() WHERE id=$1`,
+          `UPDATE doctor_update_runs SET status='skipped', result='skipped', prev_photo=$2, fail_reason=$3, finished_at=now(), updated_at=now() WHERE id=$1`,
           [runId, outcome.prevPhoto || null, outcome.reason.slice(0, 300)]
         );
         return NextResponse.json({ ok: true, result: "skipped", reason: outcome.reason });

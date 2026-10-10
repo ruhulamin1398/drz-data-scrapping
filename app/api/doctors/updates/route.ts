@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
     const counts = await pool.query(
       `SELECT status, COUNT(*) c FROM doctor_update_runs GROUP BY status`
     ).catch(() => ({ rows: [] as { status: string; c: string }[] }));
-    const byStatus: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0 };
+    const byStatus: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0, skipped: 0 };
     for (const r of counts.rows) byStatus[r.status] = Number(r.c);
     return NextResponse.json({ items: rows.rows, counts: byStatus });
   } catch (e: unknown) {

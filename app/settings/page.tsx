@@ -4,15 +4,15 @@ import { useEffect, useState } from "react";
 import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 
 type Settings = {
-  enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; prewarm_enabled: boolean;
+  enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; prewarm_enabled: boolean; doctor_updates_enabled: boolean;
   concurrency: number; tasks_per_tick: number;
-  facilities_tasks_per_tick: number; doctors_tasks_per_tick: number; prewarm_tasks_per_tick: number;
+  facilities_tasks_per_tick: number; doctors_tasks_per_tick: number; prewarm_tasks_per_tick: number; doctor_updates_tasks_per_tick: number;
   heartbeat_at: string | null;
   jina_keys_count?: number; jina_keys_masked?: string[];
 };
 
 export default function SettingsPage() {
-  const [s, setS] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, prewarm_enabled: true, concurrency: 3, tasks_per_tick: 10, facilities_tasks_per_tick: 10, doctors_tasks_per_tick: 10, prewarm_tasks_per_tick: 10, heartbeat_at: null });
+  const [s, setS] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, prewarm_enabled: true, doctor_updates_enabled: true, concurrency: 3, tasks_per_tick: 10, facilities_tasks_per_tick: 10, doctors_tasks_per_tick: 10, prewarm_tasks_per_tick: 10, doctor_updates_tasks_per_tick: 10, heartbeat_at: null });
   const [saved, setSaved] = useState(false);
   const [keysText, setKeysText] = useState("");
   const [keysTouched, setKeysTouched] = useState(false);
@@ -92,6 +92,14 @@ export default function SettingsPage() {
           hint={s.enabled ? (s.prewarm_enabled ? "Cron visits pages (ISR warming)" : "Pre-warm skipped by cron") : "Needs Processor active to run"}
         >
           <TasksPerTickInput value={s.prewarm_tasks_per_tick} onChange={(n) => update({ prewarm_tasks_per_tick: n })} />
+        </QueueSwitch>
+        <QueueSwitch
+          on={s.doctor_updates_enabled}
+          onToggle={() => update({ doctor_updates_enabled: !s.doctor_updates_enabled })}
+          title={`Doctor updates queue ${s.doctor_updates_enabled ? "on" : "off"}`}
+          hint={s.enabled ? (s.doctor_updates_enabled ? "Cron refreshes doctor photos (Render)" : "Doctor updates skipped by cron") : "Needs Processor active to run"}
+        >
+          <TasksPerTickInput value={s.doctor_updates_tasks_per_tick} onChange={(n) => update({ doctor_updates_tasks_per_tick: n })} />
         </QueueSwitch>
       </div>
 
