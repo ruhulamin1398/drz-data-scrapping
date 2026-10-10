@@ -17,7 +17,7 @@ export async function GET(req: NextRequest) {
     if (specialty) { vals.push(specialty); conds.push(`specialty_slug=$${vals.length}`); }
     if (city) { vals.push(city); conds.push(`city=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-    let sql = `SELECT * FROM doctor_queue ${where} ORDER BY id`;
+    let sql = `SELECT * FROM doctor_queue ${where} ORDER BY updated_at DESC, id DESC`;
     if (!all) {
       vals.push(limit, offset);
       sql += ` LIMIT $${vals.length - 1} OFFSET $${vals.length}`;

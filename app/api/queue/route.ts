@@ -16,7 +16,7 @@ export async function GET(req: NextRequest) {
     if (status) { vals.push(status); conds.push(`status=$${vals.length}`); }
     if (group) { vals.push(group); conds.push(`group_key=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-    let sql = `SELECT * FROM facility_queue ${where} ORDER BY id`;
+    let sql = `SELECT * FROM facility_queue ${where} ORDER BY updated_at DESC, id DESC`;
     if (!all) {
       vals.push(limit, offset);
       sql += ` LIMIT $${vals.length - 1} OFFSET $${vals.length}`;

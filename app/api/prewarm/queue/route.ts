@@ -13,7 +13,7 @@ export async function GET(req: NextRequest) {
     const vals: (string | number)[] = [];
     if (status) { vals.push(status); conds.push(`status=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-    let sql = `SELECT * FROM prewarm_queue ${where} ORDER BY id`;
+    let sql = `SELECT * FROM prewarm_queue ${where} ORDER BY updated_at DESC, id DESC`;
     if (!all) {
       vals.push(limit, offset);
       sql += ` LIMIT $${vals.length - 1} OFFSET $${vals.length}`;
