@@ -6,8 +6,9 @@ import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 type DRow = {
   id: number; source_url: string; name: string | null;
   specialty_slug: string | null; specialty_slugs: string[]; department_ids: string[];
-  card_text: string | null;  status: "pending" | "processing" | "success" | "failed";
+  city: string | null; card_text: string | null;  status: "pending" | "processing" | "success" | "failed";
   drx_id: string | null; fail_reason: string | null;
+  created_at: string | null; updated_at: string | null;
 };
 
 const SPECIALTIES = ["anesthesiologist","best-child-psychiatrist","breast-surgeon","cancer-surgeon","cardiac-surgeon","cardiologist","chest-specialist","colorectal-surgeon","dentist","dermatologist","diabetologist","doctor-normal-delivery","endocrinologist","female-dentist","gastroenterologist","general-surgeon","gynecological-oncologist","gynecologist","hematologist","hepatobiliary-surgeon","hepatologist","homeopathic","infertility-specialist","medicine-specialist","nephrologist","neuro-ophthalmologist","neurologist","neurosurgeon","nutritionist","occupational-therapist","oncologist","ophthalmologist","orthodontist","orthopedic-specialist","otolaryngologist","pediatric-cardiologist","pediatric-gastroenterologist","pediatric-hematologist","pediatric-nephrologist","pediatric-neurologist","pediatric-neurosurgeon","pediatric-ophthalmologist","pediatric-orthopedic-surgeon","pediatric-surgeon","pediatric-urologist","pediatrician","physical-medicine-specialist","physiotherapist","plastic-surgeon","psychiatrist","psychologist","rheumatologist","sexologist","sonologist","spine-surgeon","urologist","vascular-surgeon"];
@@ -25,6 +26,11 @@ export default function Doctors() {
   const [last, setLast] = useState("");
   const [done, setDone] = useState(0);
   const [active, setActive] = useState<string[]>([]);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [editing, setEditing] = useState<DRow | null>(null);
+  const [draft, setDraft] = useState({ name: "", specialty: "", deptIds: "", city: "" });
+  const [saving, setSaving] = useState(false);
+  const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const [settings, setSettings] = useState({ enabled: false, doctors_enabled: true, doctors_tasks_per_tick: 10 });
   const stopRef = useRef(false);
   const busyRetry = busy || active.length > 0;
@@ -102,6 +108,45 @@ export default function Doctors() {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, ...body }),
     });
+  }
+
+  function openEdit(q: DRow) {
+    setEditing(q);
+    setDraft({
+      name: q.name ?? "",
+      specialty: q.specialty_slug ?? "",
+      deptIds: (q.department_ids ?? []).join(", "),
+      city: q.city ?? "",
+    });
+  }
+
+  async function saveEdit() {
+    if (!editing || saving) return;
+    setSaving(true);
+    try {
+      const deptIds = draft.deptIds.split(",").map((s) => s.trim()).filter(Boolean);
+      await patch(editing.source_url, {
+        status: editing.status,
+        name: draft.name.trim() || undefined,
+        specialtySlug: draft.specialty || undefined,
+        ...(deptIds.length ? { departmentIds: deptIds, forceDepartments: true } : {}),
+        city: draft.city.trim() || undefined,
+        failReason: editing.fail_reason,
+      });
+      setEditing(null);
+      load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteRow(url: string) {
+    await fetch("/api/doctors/queue", {
+      method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    setConfirmDel(null);
+    load();
   }
 
   // Browser-driven single-item pipeline: fetch -> extract -> drx -> mark.
@@ -301,9 +346,38 @@ export default function Doctors() {
                   {active.includes(q.source_url) && <span className="h-3 w-3 animate-spin rounded-full border-2 border-current border-t-transparent" />}
                   ↻ Retry</button>
               )}
+              <button onClick={() => setExpanded(expanded === q.source_url ? null : q.source_url)} title="View details"
+                className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-primary hover:text-text-primary">👁</button>
+              <button onClick={() => openEdit(q)} title="Edit row"
+                className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-primary hover:text-text-primary">✏️</button>
+              {confirmDel === q.source_url ? (
+                <span className="flex items-center gap-1 text-xs">
+                  <button onClick={() => deleteRow(q.source_url)}
+                    className="rounded-lg border border-danger px-2 py-1 font-medium text-danger hover:bg-danger/10">Yes, delete</button>
+                  <button onClick={() => setConfirmDel(null)}
+                    className="rounded-lg border border-border px-2 py-1 text-text-secondary hover:border-primary">Keep</button>
+                </span>
+              ) : (
+                <button onClick={() => setConfirmDel(q.source_url)} title="Delete queue row (backend record kept)"
+                  className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-danger hover:text-danger">🗑</button>
+              )}
             </div>
             {q.status === "failed" && q.fail_reason && (
               <p className="mt-1 font-mono text-[11px] text-danger">{q.fail_reason}</p>
+            )}
+            {expanded === q.source_url && (
+              <dl className="mt-2 grid grid-cols-[110px_1fr] gap-x-2 gap-y-1 rounded-lg bg-surface-alt p-2 text-xs">
+                <dt className="text-text-secondary">id</dt><dd className="font-mono text-text-primary">{q.id}</dd>
+                <dt className="text-text-secondary">source</dt><dd className="break-all font-mono text-text-primary">{q.source_url}</dd>
+                <dt className="text-text-secondary">city</dt><dd className="text-text-primary">{q.city ?? "—"}</dd>
+                <dt className="text-text-secondary">specialty</dt><dd className="font-mono text-text-primary">{q.specialty_slug ?? "—"}</dd>
+                <dt className="text-text-secondary">specialties</dt><dd className="font-mono text-text-primary">{(q.specialty_slugs ?? []).join(", ") || "—"}</dd>
+                <dt className="text-text-secondary">dept ids</dt><dd className="break-all font-mono text-text-primary">{(q.department_ids ?? []).join(", ") || "—"}</dd>
+                <dt className="text-text-secondary">drx id</dt><dd className="break-all font-mono text-text-primary">{q.drx_id ?? "—"}</dd>
+                <dt className="text-text-secondary">card</dt><dd className="break-all text-text-primary">{q.card_text ?? "—"}</dd>
+                <dt className="text-text-secondary">created</dt><dd className="text-text-primary">{q.created_at ? new Date(q.created_at).toLocaleString() : "—"}</dd>
+                <dt className="text-text-secondary">updated</dt><dd className="text-text-primary">{q.updated_at ? new Date(q.updated_at).toLocaleString() : "—"}</dd>
+              </dl>
             )}
           </div>
         ))}
@@ -332,6 +406,42 @@ export default function Doctors() {
           <option value="all">All</option>
         </select>
       </div>
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !saving && setEditing(null)}>
+          <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-text-primary">Edit doctor row</h3>
+            <p className="mt-0.5 truncate font-mono text-[11px] text-text-secondary">{editing.source_url}</p>
+            <label className="mt-3 block text-xs font-medium text-text-secondary">Name
+              <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 text-sm text-text-primary outline-none focus:border-primary" />
+            </label>
+            <label className="mt-2 block text-xs font-medium text-text-secondary">Specialty
+              <select value={draft.specialty} onChange={(e) => setDraft({ ...draft, specialty: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 text-sm text-text-primary outline-none focus:border-primary">
+                {draft.specialty && !SPECIALTIES.includes(draft.specialty) && <option value={draft.specialty}>{draft.specialty}</option>}
+                {!draft.specialty && <option value="">— none (auto-resolve on retry) —</option>}
+                {SPECIALTIES.map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <label className="mt-2 block text-xs font-medium text-text-secondary">Department ids (comma-separated — replaces current)
+              <input value={draft.deptIds} onChange={(e) => setDraft({ ...draft, deptIds: e.target.value })} placeholder="leave empty to keep current"
+                className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 font-mono text-sm text-text-primary outline-none focus:border-primary" />
+            </label>
+            <label className="mt-2 block text-xs font-medium text-text-secondary">City
+              <input value={draft.city} onChange={(e) => setDraft({ ...draft, city: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 text-sm text-text-primary outline-none focus:border-primary" />
+            </label>
+            <p className="mt-2 text-[11px] text-text-secondary">Changing specialty keeps the current departments unless you edit them too.</p>
+            <div className="mt-3 flex justify-end gap-2">
+              <button onClick={() => setEditing(null)} disabled={saving}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary hover:border-primary disabled:opacity-40">Cancel</button>
+              <button onClick={saveEdit} disabled={saving}
+                className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{saving ? "Saving…" : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

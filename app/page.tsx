@@ -16,7 +16,9 @@ type QRow = {
   group_key: string | null;
   status: "pending" | "processing" | "success" | "failed";
   name: string | null; full_address: string | null;
+  phones: string | null; extra_information: string | null;
   drx_id: number | null; fail_reason: string | null;
+  created_at: string | null; updated_at: string | null;
 };
 
 type DoneStatus = "failed" | "success";
@@ -37,6 +39,11 @@ export default function Home() {
   const [settings, setSettings] = useState<Settings>({ enabled: false, facilities_enabled: true, doctors_enabled: true, concurrency: 3, tasks_per_tick: 10, facilities_tasks_per_tick: 10, heartbeat_at: null });
   const [busy, setBusy] = useState(false);
   const [active, setActive] = useState<string[]>([]); // urls the browser is retrying right now
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [editing, setEditing] = useState<QRow | null>(null);
+  const [draft, setDraft] = useState({ name: "", status: "pending", fullAddress: "", phones: "", divisionId: "", districtId: "", typeId: "" });
+  const [saving, setSaving] = useState(false);
+  const [confirmDel, setConfirmDel] = useState<string | null>(null);
   const stopRef = useRef(false);
 
   const isAll = groupKey === "all" || groupKey === "";
@@ -107,6 +114,50 @@ export default function Home() {
       method: "PATCH", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url, ...body }),
     });
+  }
+
+  function openEdit(q: QRow) {
+    setEditing(q);
+    setDraft({
+      name: q.name ?? "",
+      status: q.status === "processing" ? "pending" : q.status,
+      fullAddress: q.full_address ?? "",
+      phones: q.phones ?? "",
+      divisionId: q.division_id != null ? String(q.division_id) : "",
+      districtId: q.district_id != null ? String(q.district_id) : "",
+      typeId: q.type_id != null ? String(q.type_id) : "",
+    });
+  }
+
+  async function saveEdit() {
+    if (!editing || saving) return;
+    setSaving(true);
+    try {
+      const num = (s: string) => (s.trim() === "" ? undefined : Number(s));
+      await patch(editing.source_url, {
+        status: draft.status,
+        name: draft.name.trim() || undefined,
+        fullAddress: draft.fullAddress.trim() || undefined,
+        phones: draft.phones.trim() || undefined,
+        divisionId: num(draft.divisionId),
+        districtId: num(draft.districtId),
+        typeId: num(draft.typeId),
+        failReason: editing.fail_reason,
+      } as object);
+      setEditing(null);
+      loadQueue();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function deleteRow(url: string) {
+    await fetch("/api/queue", {
+      method: "DELETE", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ url }),
+    });
+    setConfirmDel(null);
+    loadQueue();
   }
 
   async function saveSettings(patchBody: Partial<Settings>) {
@@ -339,9 +390,40 @@ export default function Home() {
                   ↻ Retry
                 </button>
               )}
+              <button onClick={() => setExpanded(expanded === q.source_url ? null : q.source_url)} title="View details"
+                className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-primary hover:text-text-primary">👁</button>
+              <button onClick={() => openEdit(q)} title="Edit row"
+                className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-primary hover:text-text-primary">✏️</button>
+              {confirmDel === q.source_url ? (
+                <span className="flex items-center gap-1 text-xs">
+                  <button onClick={() => deleteRow(q.source_url)}
+                    className="rounded-lg border border-danger px-2 py-1 font-medium text-danger hover:bg-danger/10">Yes, delete</button>
+                  <button onClick={() => setConfirmDel(null)}
+                    className="rounded-lg border border-border px-2 py-1 text-text-secondary hover:border-primary">Keep</button>
+                </span>
+              ) : (
+                <button onClick={() => setConfirmDel(q.source_url)} title="Delete queue row (backend record kept)"
+                  className="rounded-lg border border-border px-2 py-1 text-xs text-text-secondary hover:border-danger hover:text-danger">🗑</button>
+              )}
             </div>
             {q.status === "failed" && q.fail_reason && (
               <p className="mt-1 font-mono text-[11px] text-danger">{q.fail_reason}</p>
+            )}
+            {expanded === q.source_url && (
+              <dl className="mt-2 grid grid-cols-[110px_1fr] gap-x-2 gap-y-1 rounded-lg bg-surface-alt p-2 text-xs">
+                <dt className="text-text-secondary">id</dt><dd className="font-mono text-text-primary">{q.id}</dd>
+                <dt className="text-text-secondary">title</dt><dd className="text-text-primary">{q.title}</dd>
+                <dt className="text-text-secondary">source</dt><dd className="break-all font-mono text-text-primary">{q.source_url}</dd>
+                <dt className="text-text-secondary">group</dt><dd className="font-mono text-text-primary">{q.group_key ?? "—"}</dd>
+                <dt className="text-text-secondary">division</dt><dd className="font-mono text-text-primary">{q.division_id}</dd>
+                <dt className="text-text-secondary">district</dt><dd className="font-mono text-text-primary">{q.district_id ?? "—"}</dd>
+                <dt className="text-text-secondary">type</dt><dd className="font-mono text-text-primary">{q.type_id}</dd>
+                <dt className="text-text-secondary">address</dt><dd className="text-text-primary">{q.full_address ?? "—"}</dd>
+                <dt className="text-text-secondary">phones</dt><dd className="font-mono text-text-primary">{q.phones ?? "—"}</dd>
+                <dt className="text-text-secondary">drx id</dt><dd className="font-mono text-text-primary">{q.drx_id ?? "—"}</dd>
+                <dt className="text-text-secondary">created</dt><dd className="text-text-primary">{q.created_at ? new Date(q.created_at).toLocaleString() : "—"}</dd>
+                <dt className="text-text-secondary">updated</dt><dd className="text-text-primary">{q.updated_at ? new Date(q.updated_at).toLocaleString() : "—"}</dd>
+              </dl>
             )}
             {q.status === "success" && q.full_address && (
               <p className="mt-1 truncate text-xs text-text-secondary">{q.full_address}</p>
@@ -378,6 +460,53 @@ export default function Home() {
           <option value="all">All</option>
         </select>
       </div>
+
+      {editing && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4" onClick={() => !saving && setEditing(null)}>
+          <div className="w-full max-w-md rounded-2xl border border-border bg-surface p-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-sm font-semibold text-text-primary">Edit facility row</h3>
+            <p className="mt-0.5 truncate font-mono text-[11px] text-text-secondary">{editing.source_url}</p>
+            <label className="mt-3 block text-xs font-medium text-text-secondary">Name
+              <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 text-sm text-text-primary outline-none focus:border-primary" />
+            </label>
+            <label className="mt-2 block text-xs font-medium text-text-secondary">Status (pending re-queues the row)
+              <select value={draft.status} onChange={(e) => setDraft({ ...draft, status: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 text-sm text-text-primary outline-none focus:border-primary">
+                {(["pending", "success", "failed"] as const).map((s) => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </label>
+            <label className="mt-2 block text-xs font-medium text-text-secondary">Full address
+              <input value={draft.fullAddress} onChange={(e) => setDraft({ ...draft, fullAddress: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 text-sm text-text-primary outline-none focus:border-primary" />
+            </label>
+            <label className="mt-2 block text-xs font-medium text-text-secondary">Phones
+              <input value={draft.phones} onChange={(e) => setDraft({ ...draft, phones: e.target.value })}
+                className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 font-mono text-sm text-text-primary outline-none focus:border-primary" />
+            </label>
+            <div className="mt-2 grid grid-cols-3 gap-2">
+              <label className="block text-xs font-medium text-text-secondary">Division id
+                <input type="number" value={draft.divisionId} onChange={(e) => setDraft({ ...draft, divisionId: e.target.value })}
+                  className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 font-mono text-sm text-text-primary outline-none focus:border-primary" />
+              </label>
+              <label className="block text-xs font-medium text-text-secondary">District id
+                <input type="number" value={draft.districtId} onChange={(e) => setDraft({ ...draft, districtId: e.target.value })}
+                  className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 font-mono text-sm text-text-primary outline-none focus:border-primary" />
+              </label>
+              <label className="block text-xs font-medium text-text-secondary">Type id
+                <input type="number" value={draft.typeId} onChange={(e) => setDraft({ ...draft, typeId: e.target.value })}
+                  className="mt-1 w-full rounded-lg border border-border bg-surface-alt px-2.5 py-2 font-mono text-sm text-text-primary outline-none focus:border-primary" />
+              </label>
+            </div>
+            <div className="mt-3 flex justify-end gap-2">
+              <button onClick={() => setEditing(null)} disabled={saving}
+                className="rounded-lg border border-border px-3 py-1.5 text-sm text-text-secondary hover:border-primary disabled:opacity-40">Cancel</button>
+              <button onClick={saveEdit} disabled={saving}
+                className="rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white disabled:opacity-40">{saving ? "Saving…" : "Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
     </main>
   );
 }

@@ -72,6 +72,20 @@ export async function PATCH(req: NextRequest) {
   }
 }
 
+// DELETE /api/queue { url } — removes the queue row only.
+// The backend record (if pushed) is deliberately left untouched.
+export async function DELETE(req: NextRequest) {
+  try {
+    const b = await req.json();
+    if (!b.url) return NextResponse.json({ error: "url required" }, { status: 400 });
+    const pool = db();
+    const r = await pool.query(`DELETE FROM facility_queue WHERE source_url=$1`, [b.url]);
+    return NextResponse.json({ ok: true, deleted: r.rowCount ?? 0 });
+  } catch (e: unknown) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+  }
+}
+
 // POST /api/queue { action: "retry", statuses: [...], toStatus?, fullContent?, group? }
 // Resets matching rows for manual browser retry. toStatus defaults to 'pending';
 // pass 'processing' to claim them synchronously so cron (pending-only) can't steal them.

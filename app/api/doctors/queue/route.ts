@@ -37,8 +37,10 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// PATCH /api/doctors/queue { url, status, ...fields } — single-row reset/retry.
+// PATCH /api/doctors/queue { url, status, ...fields } — single-row reset/retry/edit.
 // specialtySlug/departmentIds persist an auto-resolved specialty (browser path).
+// city overwrites when given. forceDepartments:true replaces department_ids
+// outright (edit dialog); otherwise departmentIds only fill empty slots.
 export async function PATCH(req: NextRequest) {
   try {
     const b = await req.json();
@@ -49,12 +51,28 @@ export async function PATCH(req: NextRequest) {
         fail_reason=$5,
         specialty_slug=COALESCE($6,specialty_slug),
         specialty_slugs = CASE WHEN $6 IS NOT NULL AND specialty_slugs='{}' THEN ARRAY[$6] ELSE specialty_slugs END,
-        department_ids = CASE WHEN $7 IS NOT NULL AND department_ids='{}' THEN $7 ELSE department_ids END,
+        department_ids = CASE WHEN $8 THEN $7
+          WHEN $7 IS NOT NULL AND department_ids='{}' THEN $7 ELSE department_ids END,
+        city=COALESCE($9,city),
         locked_at = CASE WHEN $2='processing' THEN NULL ELSE locked_at END,
         updated_at=now() WHERE source_url=$1`,
-      [b.url, b.status, b.name ?? null, b.drxId ?? null, b.failReason ?? null, b.specialtySlug ?? null, b.departmentIds ?? null]
+      [b.url, b.status, b.name ?? null, b.drxId ?? null, b.failReason ?? null, b.specialtySlug ?? null, b.departmentIds ?? null, b.forceDepartments === true, b.city ?? null]
     );
     return NextResponse.json({ ok: true });
+  } catch (e: unknown) {
+    return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
+  }
+}
+
+// DELETE /api/doctors/queue { url } — removes the queue row only.
+// The backend record (if pushed) is deliberately left untouched.
+export async function DELETE(req: NextRequest) {
+  try {
+    const b = await req.json();
+    if (!b.url) return NextResponse.json({ error: "url required" }, { status: 400 });
+    const pool = db();
+    const r = await pool.query(`DELETE FROM doctor_queue WHERE source_url=$1`, [b.url]);
+    return NextResponse.json({ ok: true, deleted: r.rowCount ?? 0 });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }
