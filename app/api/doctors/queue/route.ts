@@ -38,6 +38,7 @@ export async function GET(req: NextRequest) {
 }
 
 // PATCH /api/doctors/queue { url, status, ...fields } — single-row reset/retry.
+// specialtySlug/departmentIds persist an auto-resolved specialty (browser path).
 export async function PATCH(req: NextRequest) {
   try {
     const b = await req.json();
@@ -45,9 +46,13 @@ export async function PATCH(req: NextRequest) {
     const pool = db();
     await pool.query(
       `UPDATE doctor_queue SET status=$2, name=COALESCE($3,name), drx_id=COALESCE($4,drx_id),
-        fail_reason=$5, locked_at = CASE WHEN $2='processing' THEN NULL ELSE locked_at END,
+        fail_reason=$5,
+        specialty_slug=COALESCE($6,specialty_slug),
+        specialty_slugs = CASE WHEN $6 IS NOT NULL AND specialty_slugs='{}' THEN ARRAY[$6] ELSE specialty_slugs END,
+        department_ids = CASE WHEN $7 IS NOT NULL AND department_ids='{}' THEN $7 ELSE department_ids END,
+        locked_at = CASE WHEN $2='processing' THEN NULL ELSE locked_at END,
         updated_at=now() WHERE source_url=$1`,
-      [b.url, b.status, b.name ?? null, b.drxId ?? null, b.failReason ?? null]
+      [b.url, b.status, b.name ?? null, b.drxId ?? null, b.failReason ?? null, b.specialtySlug ?? null, b.departmentIds ?? null]
     );
     return NextResponse.json({ ok: true });
   } catch (e: unknown) {

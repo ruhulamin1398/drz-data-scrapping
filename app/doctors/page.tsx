@@ -5,7 +5,7 @@ import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 
 type DRow = {
   id: number; source_url: string; name: string | null;
-  specialty_slug: string; specialty_slugs: string[]; department_ids: string[];
+  specialty_slug: string | null; specialty_slugs: string[]; department_ids: string[];
   card_text: string | null;  status: "pending" | "processing" | "success" | "failed";
   drx_id: string | null; fail_reason: string | null;
 };
@@ -124,18 +124,23 @@ export default function Doctors() {
       });
       const ej = await e.json();
       if (!e.ok) throw new Error(ej.error || `extract ${e.status}`);
+      // Source-URL-only row: extract route auto-resolved specialty + departments.
+      const deptIds: string[] = ej.departmentIds?.length ? ej.departmentIds : q.department_ids;
 
       const d = await fetch("/api/doctors/drx", {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          doctor: ej.doctor, departmentIds: q.department_ids,
+          doctor: ej.doctor, departmentIds: deptIds,
           sourceUrl: q.source_url, drxId: q.drx_id ?? undefined,
         }),
       });
       const dj = await d.json();
       if (!d.ok) throw new Error(dj.error || `drx ${d.status}`);
 
-      await patch(q.source_url, { status: "success", name: ej.doctor.name, drxId: dj.drxId, failReason: null });
+      await patch(q.source_url, {
+        status: "success", name: ej.doctor.name, drxId: dj.drxId, failReason: null,
+        ...(ej.specialtySlug ? { specialtySlug: ej.specialtySlug, departmentIds: deptIds } : {}),
+      });
       return true;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

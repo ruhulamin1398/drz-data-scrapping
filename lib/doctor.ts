@@ -404,3 +404,158 @@ async function patchDoctor(base: string, token: string, id: string, payload: obj
     throw new Error(t.slice(0, 300) || `drx patch ${res.status}`);
   }
 }
+
+// --- Source-URL-only rows: auto-resolve specialty + departments from content ---
+
+// Generic title words that must not decide the match on their own.
+const GENERIC_WORDS = new Set([
+  "specialist", "specialists", "doctor", "doctors", "dr",
+  "consultant", "professor", "associate", "assistant", "senior", "junior",
+  "chief", "practitioner",
+]);
+
+// Weak everyday words replaced by their medical equivalent before matching
+// (raw word dropped: "child" must not match child-psychiatrist).
+const SYNONYMS: Record<string, string> = {
+  child: "pediatric",
+  sex: "sexologist",
+  sexual: "sexologist",
+  heart: "cardio",
+};
+
+function tokensOf(s: string): string[] {
+  return s.toLowerCase().split(/[^a-z]+/).filter((w) => w.length > 1);
+}
+
+// Match "X Specialist" (+ designation) against backend departments by keyword
+// overlap. Words are normalized (cardiology/cardiologist → cardiolog) so
+// speciality nouns match person nouns; generic title words never score.
+// Best score wins; exact ties share (cap 2). No hit → loud failure instead
+// of pushing to a wrong department.
+function normWord(w: string): string {
+  let s = w.toLowerCase();
+  if (s.length > 3 && s.endsWith("s") && !s.endsWith("ss")) s = s.slice(0, -1);
+  s = s
+    .replace(/(o?logy|ologist)$/, "olog")
+    .replace(/icians?$/, "ic")
+    .replace(/(iatrics|iatry)$/, "iatr")
+    .replace(/gery$/, "geon");
+  return s;
+}
+
+function wordHit(a: string, b: string): boolean {
+  if (a === b) return true;
+  const m = Math.min(a.length, b.length);
+  if (m >= 4 && (a.includes(b) || b.includes(a))) return true;
+  // Shared stem fallback ("diabetolog"/"diabete" → "diabet").
+  let p = 0;
+  while (p < m && a[p] === b[p]) p++;
+  return p >= 6;
+}
+
+// Both raw and normalized variants participate: normalization can split a
+// pair that matches raw ("diabetes" ⊂ "diabetologist") and vice versa.
+// Counting stays per canonical word so variants never double-score.
+function variants(w: string): string[] {
+  const n = normWord(w);
+  return n === w ? [w] : [w, n];
+}
+
+function canonical(
+  words: string[], mapSynonyms: boolean, dropWeak: boolean
+): { key: string; vars: string[] }[] {
+  const out: { key: string; vars: string[] }[] = [];
+  for (const raw of words) {
+    const w = raw.toLowerCase();
+    if (w.length <= 2) continue;
+    const n = normWord(w);
+    const weak = SYNONYMS[n] !== undefined;
+    if (dropWeak && weak) continue;
+    const key = mapSynonyms && weak ? SYNONYMS[n] : n;
+    if (key.length <= 2 || GENERIC_WORDS.has(key) || out.some((t) => t.key === key)) continue;
+    // Weak everyday words match ONLY via their mapped form (so "child"
+    // never matches child-psychiatrist); strong words match raw + norm.
+    const vars = weak && mapSynonyms ? [key] : [...new Set([w, n, key])];
+    out.push({ key, vars });
+  }
+  return out;
+}
+
+export async function resolveDepartmentIds(
+  specialityArea: string, designation: string
+): Promise<{ slug: string; ids: string[] }> {
+  const base = (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
+  const token = process.env.DRX_ADMIN_TOKEN || "";
+  if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
+  const res = await fetch(`${base}/api/v1/departments?limit=100`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`departments lookup failed: ${res.status}`);
+  const json = await res.json().catch(() => null);
+  const items: { id: string; slug: string; name: string }[] = json?.data?.items ?? [];
+  const toks = canonical(tokensOf(`${specialityArea ?? ""} ${designation ?? ""}`), true, false);
+  if (!toks.length) {
+    throw new Error("specialty could not be resolved from profile — set specialty_slug manually");
+  }
+  const hits: { id: string; slug: string; score: number; words: number; covered: string[] }[] = [];
+  for (const d of items) {
+    const slugWords = canonical(d.slug.toLowerCase().split(/[^a-z]+/), false, true);
+    const nameWords = canonical(tokensOf(d.name ?? ""), false, true)
+      .filter((w) => !slugWords.some((s) => s.key === w.key));
+    let score = 0;
+    const covered: string[] = [];
+    for (const w of slugWords) {
+      const hit = toks.filter((t) => w.vars.some((v) => t.vars.some((tv) => wordHit(v, tv))));
+      if (hit.length) { score += 2; covered.push(...hit.map((t) => t.key)); }
+    }
+    for (const w of nameWords) {
+      const hit = toks.filter((t) => w.vars.some((v) => t.vars.some((tv) => wordHit(v, tv))));
+      if (hit.length) { score += 1; covered.push(...hit.map((t) => t.key)); }
+    }
+    if (score > 0) hits.push({ id: d.id, slug: d.slug, score, words: slugWords.length, covered });
+  }
+  if (!hits.length) {
+    throw new Error(`specialty could not be resolved ("${specialityArea}") — set specialty_slug manually`);
+  }
+  // Best score wins; ties prefer the general dept (fewer slug words).
+  // One runner-up joins only on equal score with uncovered tokens (cap 2).
+  hits.sort((x, y) => y.score - x.score || x.words - y.words);
+  const covered = new Set(hits[0].covered);
+  const top = [hits[0]];
+  for (const h of hits.slice(1)) {
+    if (top.length >= 2 || h.score !== hits[0].score) break;
+    if (h.covered.some((t) => !covered.has(t))) {
+      h.covered.forEach((t) => covered.add(t));
+      top.push(h);
+    }
+  }
+  return { slug: top[0].slug, ids: top.map((t) => t.id) };
+}
+
+// Full auto path: extract with a neutral placeholder dept, resolve the real
+// dept from the extracted speciality, then fix workingIn's middle segment.
+export async function extractDoctorAuto(
+  md: string, cardText?: string
+): Promise<{ doctor: ExtractedDoctor; specialtySlug: string; departmentIds: string[] }> {
+  const doctor = await extractDoctor(md, "medicine-specialist", "Medicine Specialist", cardText);
+  const { slug, ids } = await resolveDepartmentIds(doctor.specialityArea ?? "", doctor.designation ?? "");
+  const parts = (doctor.workingIn ?? "").split(",").map((x) => x.trim());
+  const workingIn = parts.length >= 3
+    ? `${parts[0]}, ${slug}, ${parts.slice(2).join(" ")}`
+    : doctor.workingIn;
+  return { doctor: { ...doctor, workingIn }, specialtySlug: slug, departmentIds: ids };
+}
+
+// Persist a resolved specialty back to the queue row (fills only empty slots).
+export async function saveResolvedSpecialty(
+  pool: { query: (t: string, v: unknown[]) => Promise<unknown> },
+  sourceUrl: string, slug: string, ids: string[]
+): Promise<void> {
+  await pool.query(
+    `UPDATE doctor_queue SET specialty_slug=$2,
+      specialty_slugs = CASE WHEN specialty_slugs='{}' THEN ARRAY[$2] ELSE specialty_slugs END,
+      department_ids = CASE WHEN department_ids='{}' THEN $3 ELSE department_ids END,
+      updated_at=now() WHERE source_url=$1`,
+    [sourceUrl, slug, ids]
+  ).catch(() => {});
+}

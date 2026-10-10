@@ -3,7 +3,7 @@ import { after } from "next/server";
 import { db } from "./db";
 import { fetchSource, extractInfo, pushDrx } from "./scrape";
 import { parseExtracted } from "./parse";
-import { fetchDoctorProfile, fetchDoctorPhoto, extractDoctor, deptTitle, pushDoctor } from "./doctor";
+import { fetchDoctorProfile, fetchDoctorPhoto, extractDoctor, deptTitle, pushDoctor, extractDoctorAuto, saveResolvedSpecialty } from "./doctor";
 import { visitUrl } from "./prewarm";
 
 export type QRow = {
@@ -29,7 +29,7 @@ export type PrewarmRow = {
 
 export type DocRow = {
   id: number; source_url: string; name: string | null;
-  specialty_slug: string; specialty_slugs: string[]; department_ids: string[];
+  specialty_slug: string | null; specialty_slugs: string[]; department_ids: string[];
   card_text: string | null; status: string; drx_id: string | null;
   structure_md: string | null;
 };
@@ -152,10 +152,21 @@ async function processDoctorItem(pool: Pool, q: DocRow): Promise<boolean> {
         [q.source_url, md]
       ).catch(() => {});
     }
-    const d = await extractDoctor(md, q.specialty_slug, deptTitle(q.specialty_slug), q.card_text ?? undefined);
+    const slug = (q.specialty_slug || "").trim();
+    let d;
+    let deptIds = q.department_ids;
+    if (slug) {
+      d = await extractDoctor(md, slug, deptTitle(slug), q.card_text ?? undefined);
+    } else {
+      // Source-URL-only row: resolve specialty + departments from the profile.
+      const auto = await extractDoctorAuto(md, q.card_text ?? undefined);
+      d = auto.doctor;
+      deptIds = auto.departmentIds;
+      await saveResolvedSpecialty(pool, q.source_url, auto.specialtySlug, auto.departmentIds);
+    }
     const photo = await fetchDoctorPhoto(q.source_url);
     const r = await pushDoctor({
-      ...d, departmentIds: q.department_ids, sourceUrl: q.source_url,
+      ...d, departmentIds: deptIds, sourceUrl: q.source_url,
       drxId: q.drx_id ?? undefined, photo: photo || d.photo,
     });
     await pool.query(
