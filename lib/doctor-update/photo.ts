@@ -1,7 +1,13 @@
 // Photo update utility (pilot). Independent: decides its own source (raw HTML
 // og:image via fetchDoctorPhoto), never touches structure_md, no AI needed.
 import { fetchDoctorPhoto } from "../doctor";
+import { throttle } from "./throttle";
 import type { PhotoOptions, PhotoOutcome, UpdateCtx } from "./types";
+
+// Outbound pacing: max 1 request per 3s across all photo-update callers in this
+// process (DRX GET + source scrape + DRX PATCH share one lane).
+const GAP_MS = 3000;
+const LANE = "photo-update";
 
 function drxBase(): string {
   return (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
@@ -15,6 +21,7 @@ function drxToken(): string {
 
 // Current hosted photo on DRX ("" when missing). Read-only, cheap.
 export async function getCurrentPhoto(drxId: string): Promise<string> {
+  await throttle(LANE, GAP_MS);
   const res = await fetch(`${drxBase()}/api/v1/doctors/${drxId}`, {
     headers: { Authorization: `Bearer ${drxToken()}` },
   });
@@ -26,6 +33,7 @@ export async function getCurrentPhoto(drxId: string): Promise<string> {
 
 // Fresh scrape of the source page (og:image). Utility-owned source decision.
 export async function resolvePhoto(sourceUrl: string): Promise<string> {
+  await throttle(LANE, GAP_MS);
   return (await fetchDoctorPhoto(sourceUrl)).trim();
 }
 
@@ -50,6 +58,7 @@ export async function updatePhoto(ctx: UpdateCtx, opts: PhotoOptions): Promise<P
 
 // Persist: backend re-hosts photoUrl to R2 (verified 2026-10-10). Never hotlink via `photo`.
 export async function applyPhoto(drxId: string, photoUrl: string): Promise<void> {
+  await throttle(LANE, GAP_MS);
   const res = await fetch(`${drxBase()}/api/v1/doctors/${drxId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${drxToken()}` },
