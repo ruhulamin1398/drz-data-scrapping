@@ -560,6 +560,10 @@ export async function resolveDepartmentIds(
     if (score > 0) hits.push({ id: d.id, slug: d.slug, score, words: slugWords.length, covered });
   }
   if (!hits.length) {
+    // Keyword match found nothing — let AI decide from the live list before
+    // failing loudly. Still throws manual-action error if AI declines/fails.
+    const ai = await resolveViaAI(specialityArea ?? "", designation ?? "", items);
+    if (ai) return ai;
     throw new Error(`specialty could not be resolved ("${specialityArea}") — set specialty_slug manually`);
   }
   // Best score wins; ties prefer the general dept (fewer slug words).
@@ -575,6 +579,50 @@ export async function resolveDepartmentIds(
     }
   }
   return { slug: top[0].slug, ids: top.map((t) => t.id) };
+}
+
+// AI fallback: when keyword matching finds nothing, ask the model to pick
+// 1-2 slugs from the live department list (or none). Returned slugs are
+// strictly validated against the list — hallucinations fall through to the
+// loud manual failure below. Null = AI declined or failed.
+async function resolveViaAI(
+  specialityArea: string, designation: string,
+  items: { id: string; slug: string; name: string }[]
+): Promise<{ slug: string; ids: string[] } | null> {
+  try {
+    const nexUrl = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/v1/chat/completions";
+    const model = process.env.NEX_MODEL || "gemini";
+    const list = items.map((d) => `${d.slug} — ${d.name}`).join("\n");
+    const prompt = `You map a doctor's speciality to department slugs. Reply with ONLY one JSON object, no fences, no commentary.\nDoctor speciality: "${specialityArea}"\nJob title: "${designation}"\nDepartments (slug — name):\n${list}\nPick the 1-2 slugs that best fit (2 only if the speciality genuinely spans two, e.g. "Cardiology and Medicine"). If none fit, use [].\nOutput shape: {"slugs": ["..."]}`;
+    const res = await fetch(nexUrl, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ model, messages: [{ role: "user", content: prompt }], max_tokens: 200, temperature: 0.0, stream: false }),
+    });
+    if (!res.ok) return null;
+    // nex-router returns an OpenAI-style envelope — the JSON lives in
+    // choices[0].message.content, not at the top level.
+    const json = await res.json().catch(() => null);
+    const content = typeof json?.choices?.[0]?.message?.content === "string"
+      ? json.choices[0].message.content
+      : await res.text().catch(() => "");
+    const start = content.indexOf("{");
+    const end = content.lastIndexOf("}");
+    if (start < 0 || end <= start) return null;
+    let parsed: { slugs?: unknown } = {};
+    try { parsed = JSON.parse(content.slice(start, end + 1)); } catch { return null; }
+    if (!Array.isArray(parsed.slugs)) return null;
+    const bySlug = new Map(items.map((d) => [d.slug, d.id]));
+    const ids: string[] = [];
+    for (const s of parsed.slugs.slice(0, 2)) {
+      if (typeof s !== "string") continue;
+      const id = bySlug.get(s.trim());
+      if (id && !ids.includes(id)) ids.push(id);
+    }
+    if (!ids.length) return null;
+    return { slug: items.find((d) => d.id === ids[0])!.slug, ids };
+  } catch {
+    return null;
+  }
 }
 
 // Full auto path: extract with a neutral placeholder dept, resolve the real
