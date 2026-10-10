@@ -25,6 +25,16 @@ const NAV = [
     ),
   },
   {
+    href: "/doctor-updates",
+    label: "Doc updates",
+    desc: "photo refresh",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-5 w-5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v6h6M20 20v-6h-6M20 8a8 8 0 0 0-14-3L4 7m0 9a8 8 0 0 0 14 3l2-2" />
+      </svg>
+    ),
+  },
+  {
     href: "/prewarm",
     label: "Pre-warm",
     desc: "ISR cache warm",

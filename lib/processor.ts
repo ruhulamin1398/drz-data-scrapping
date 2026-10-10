@@ -4,6 +4,8 @@ import { db } from "./db";
 import { fetchSource, extractInfo, pushDrx } from "./scrape";
 import { parseExtracted } from "./parse";
 import { fetchDoctorProfile, fetchDoctorPhoto, extractDoctor, deptTitle, pushDoctor, extractDoctorAuto, saveResolvedSpecialty } from "./doctor";
+import { applyPhoto, updatePhoto } from "./doctor-update/photo";
+import type { PhotoOptions, UpdateRunRow } from "./doctor-update/types";
 import { visitUrl } from "./prewarm";
 
 export type QRow = {
@@ -20,6 +22,7 @@ export type TickResult = {
   toppedUp: number; active: number; remaining: number;
   dtoppedUp: number; dactive: number; dremaining: number;
   ptoppedUp: number; pactive: number; premaining: number;
+  utoppedUp: number; uactive: number; uremaining: number;
 };
 
 export type PrewarmRow = {
@@ -40,6 +43,7 @@ export type PipelineStats = {
   facilities_tasks_per_tick: number; doctors_tasks_per_tick: number; prewarm_tasks_per_tick: number;
   workerActive: boolean; workerHeartbeat: string | null; heartbeatAt: string | null;
   facilities: Record<string, number>; doctors: Record<string, number>; prewarm: Record<string, number>;
+  updates: Record<string, number>;
   lastRun: { status: string; succeeded: number; failed: number; claimed: number; finishedAt: string | null } | null;
 };
 
@@ -77,6 +81,7 @@ export async function getPipelineStats(): Promise<PipelineStats> {
     heartbeatAt: f?.heartbeat_at ?? null,
     facilities: await tally("facility_queue"), doctors: await tally("doctor_queue"),
     prewarm: await tally("prewarm_queue"),
+    updates: await tally("doctor_update_runs").catch(() => ({ pending: 0, processing: 0, success: 0, failed: 0 })),
     lastRun: lr ? {
       status: lr.status, succeeded: Number(lr.succeeded), failed: Number(lr.failed),
       claimed: Number(lr.claimed), finishedAt: lr.finished_at,
@@ -179,6 +184,69 @@ async function processDoctorItem(pool: Pool, q: DocRow): Promise<boolean> {
     await pool.query(
       `UPDATE doctor_queue SET status='failed', fail_reason=$2, updated_at=now() WHERE source_url=$1`,
       [q.source_url, msg.slice(0, 300)]
+    ).catch(() => {});
+    return false;
+  }
+}
+
+// --- Doctor photo-update runs (independent queue, history preserved) ---
+// Each utility owns its source decision; photo uses raw HTML og:image only.
+async function claimUpdateRuns(pool: Pool, n: number): Promise<UpdateRunRow[]> {
+  const c = await pool.connect();
+  try {
+    await c.query("BEGIN");
+    const r = await c.query(
+      `SELECT * FROM doctor_update_runs WHERE status='pending'
+       ORDER BY id LIMIT $1 FOR UPDATE SKIP LOCKED`,
+      [n]
+    );
+    const rows = r.rows as UpdateRunRow[];
+    if (rows.length) {
+      await c.query(
+        `UPDATE doctor_update_runs SET status='processing', locked_at=now(), updated_at=now(),
+          attempts=attempts+1 WHERE id = ANY($1)`,
+        [rows.map((x) => x.id)]
+      );
+    }
+    await c.query("COMMIT");
+    return rows;
+  } catch (e) {
+    try { await c.query("ROLLBACK"); } catch { /* ignore */ }
+    throw e;
+  } finally {
+    c.release();
+  }
+}
+
+async function processUpdateRun(pool: Pool, q: UpdateRunRow): Promise<boolean> {
+  try {
+    if (q.type !== "photo") throw new Error(`unknown update type: ${q.type}`);
+    if (!q.drx_id) throw new Error("drxId required for photo update (push first via /doctors)");
+    const opts = (q.options ?? {}) as PhotoOptions;
+    const outcome = await updatePhoto(
+      { doctorQueueId: q.doctor_queue_id, drxId: q.drx_id, sourceUrl: q.source_url },
+      { skipIfPhotoExists: opts.skipIfPhotoExists !== false }
+    );
+    if (outcome.action === "skipped") {
+      await pool.query(
+        `UPDATE doctor_update_runs SET status='success', result='skipped',
+          prev_photo=$2, fail_reason=$3, finished_at=now(), updated_at=now() WHERE id=$1`,
+        [q.id, outcome.prevPhoto || null, outcome.reason.slice(0, 300)]
+      );
+      return true;
+    }
+    await applyPhoto(q.drx_id, outcome.newPhoto);
+    await pool.query(
+      `UPDATE doctor_update_runs SET status='success', result='updated',
+        prev_photo=$2, new_photo=$3, fail_reason=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
+      [q.id, outcome.prevPhoto || null, outcome.newPhoto]
+    );
+    return true;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await pool.query(
+      `UPDATE doctor_update_runs SET status='failed', result='failed', fail_reason=$2, finished_at=now(), updated_at=now() WHERE id=$1`,
+      [q.id, msg.slice(0, 300)]
     ).catch(() => {});
     return false;
   }
@@ -339,14 +407,24 @@ async function workerLoop(concurrency: number): Promise<{ succeeded: number; fai
           [concurrency]
         )
         : { rows: [] as PrewarmRow[] };
+      const ubatch = docOn && DOCS_ON_SERVER
+        ? await pool.query(
+          `SELECT * FROM doctor_update_runs
+           WHERE status='processing' AND locked_at IS NOT NULL
+           ORDER BY id LIMIT $1`,
+          [concurrency]
+        ).catch(() => ({ rows: [] as UpdateRunRow[] }))
+        : { rows: [] as UpdateRunRow[] };
       const rows = batch.rows as QRow[];
       const drows = dbatch.rows as DocRow[];
       const prows = pbatch.rows as PrewarmRow[];
-      if (!rows.length && !drows.length && !prows.length) break;
+      const urows = ubatch.rows as UpdateRunRow[];
+      if (!rows.length && !drows.length && !prows.length && !urows.length) break;
       const results = await Promise.all([
         ...rows.map((q) => processSingleItem(pool, q)),
         ...drows.map((q) => processDoctorItem(pool, q)),
         ...prows.map((q) => processPrewarmItem(pool, q)),
+        ...urows.map((q) => processUpdateRun(pool, q)),
       ]);
       const ok = results.filter(Boolean).length;
       succeeded += ok;
@@ -387,7 +465,7 @@ export async function runProcessor(): Promise<TickResult> {
   const s = await getSettings(pool);
   if (!s || !s.enabled) {
     await logTick(pool, "paused", 0);
-    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0, ptoppedUp: 0, pactive: 0, premaining: 0 };
+    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0, ptoppedUp: 0, pactive: 0, premaining: 0, utoppedUp: 0, uactive: 0, uremaining: 0 };
   }
   await pool.query("UPDATE settings SET heartbeat_at=now() WHERE id=1").catch(() => {});
 
@@ -408,6 +486,11 @@ export async function runProcessor(): Promise<TickResult> {
      WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
         OR locked_at < now() - INTERVAL '10 minutes')`
   ).catch(() => {});
+  await pool.query(
+    `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, updated_at=now()
+     WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
+        OR locked_at < now() - INTERVAL '10 minutes')`
+  ).catch(() => {});
 
   const concurrency = Math.min(Math.max(1, s.concurrency || 1), 10);
   const facOn = queueOn(s.facilities_enabled);
@@ -415,7 +498,7 @@ export async function runProcessor(): Promise<TickResult> {
   const pwOn = queueOn(s.prewarm_enabled);
   if (!facOn && !docOn && !pwOn) {
     await logTick(pool, "paused", 0);
-    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0, ptoppedUp: 0, pactive: 0, premaining: 0 };
+    return { status: "paused", toppedUp: 0, active: 0, remaining: 0, dtoppedUp: 0, dactive: 0, dremaining: 0, ptoppedUp: 0, pactive: 0, premaining: 0, utoppedUp: 0, uactive: 0, uremaining: 0 };
   }
   // Per-queue quotas: each queue tops up to its own tasks-per-tick.
   // Concurrency stays global (max parallel items inside the worker loop).
@@ -438,13 +521,20 @@ export async function runProcessor(): Promise<TickResult> {
     : 0;
   const pneed = pwOn ? Math.max(0, pwQuota - pactive0) : 0;
   const ptoppedUp = pneed > 0 ? (await claimPrewarm(pool, pneed)).length : 0;
+  // Photo-update runs share the doctors quota (same Render-only worker, cheap per item).
+  const uactive0 = docOn
+    ? Number((await pool.query("SELECT COUNT(*) c FROM doctor_update_runs WHERE status='processing'").catch(() => ({ rows: [{ c: 0 }] }))).rows[0].c)
+    : 0;
+  const uneed = docOn && DOCS_ON_SERVER ? Math.max(0, docQuota - dactive0 - dtoppedUp - uactive0) : 0;
+  const utoppedUp = uneed > 0 ? (await claimUpdateRuns(pool, uneed).catch(() => [] as UpdateRunRow[])).length : 0;
   const remaining = Number((await pool.query("SELECT COUNT(*) c FROM facility_queue WHERE status='pending'")).rows[0].c);
   const dremaining = Number((await pool.query("SELECT COUNT(*) c FROM doctor_queue WHERE status='pending'")).rows[0].c);
   const premaining = Number((await pool.query("SELECT COUNT(*) c FROM prewarm_queue WHERE status='pending'")).rows[0].c);
+  const uremaining = Number((await pool.query("SELECT COUNT(*) c FROM doctor_update_runs WHERE status='pending'").catch(() => ({ rows: [{ c: 0 }] }))).rows[0].c);
 
-  const tick = { toppedUp, active: active0 + toppedUp, remaining, dtoppedUp, dactive: dactive0 + dtoppedUp, dremaining, ptoppedUp, pactive: pactive0 + ptoppedUp, premaining };
+  const tick = { toppedUp, active: active0 + toppedUp, remaining, dtoppedUp, dactive: dactive0 + dtoppedUp, dremaining, ptoppedUp, pactive: pactive0 + ptoppedUp, premaining, utoppedUp, uactive: uactive0 + utoppedUp, uremaining };
   if (loopRunning) {
-    await logTick(pool, "already-running", toppedUp + dtoppedUp + ptoppedUp);
+    await logTick(pool, "already-running", toppedUp + dtoppedUp + ptoppedUp + utoppedUp);
     return { status: "already-running", ...tick };
   }
   // Atomic cross-instance ownership: only one loop anywhere.
@@ -454,11 +544,11 @@ export async function runProcessor(): Promise<TickResult> {
      RETURNING id`
   ).catch(() => null);
   if (!own || !own.rows.length) {
-    await logTick(pool, "already-running", toppedUp + dtoppedUp + ptoppedUp);
+    await logTick(pool, "already-running", toppedUp + dtoppedUp + ptoppedUp + utoppedUp);
     return { status: "already-running", ...tick };
   }
   loopRunning = true;
   after(() => workerLoop(concurrency));
-  await logTick(pool, "started", toppedUp + dtoppedUp + ptoppedUp);
+  await logTick(pool, "started", toppedUp + dtoppedUp + ptoppedUp + utoppedUp);
   return { status: "started", ...tick };
 }
