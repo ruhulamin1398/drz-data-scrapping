@@ -280,6 +280,15 @@ async function processUpdateRun(pool: Pool, q: UpdateRunRow): Promise<boolean> {
     return true;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
+    // Transient abort (e.g. search timeout): requeue as pending instead of
+    // failing, up to 5 attempts — then it is a real failure.
+    if (/abort/i.test(msg) && (q.attempts ?? 0) < 5) {
+      await pool.query(
+        `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, fail_reason=$2, finished_at=NULL, updated_at=now() WHERE id=$1`,
+        [q.id, `retryable: ${msg}`.slice(0, 300)]
+      ).catch(() => {});
+      return false;
+    }
     await pool.query(
       `UPDATE doctor_update_runs SET status='failed', result='failed', fail_reason=$2, finished_at=now(), updated_at=now() WHERE id=$1`,
       [q.id, msg.slice(0, 300)]

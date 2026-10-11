@@ -16,7 +16,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     if (!cur.rows.length) return NextResponse.json({ error: "run not found" }, { status: 404 });
     const q = cur.rows[0] as {
       id: number; doctor_queue_id: number; drx_id: string | null; source_url: string;
-      type: string; status: string; options: PhotoOptions | ExperienceOptions;
+      type: string; status: string; options: PhotoOptions | ExperienceOptions; attempts: number;
     };
     if (q.type !== "photo" && q.type !== "experience") return NextResponse.json({ error: `unsupported type: ${q.type}` }, { status: 400 });
     if (!q.drx_id) return NextResponse.json({ error: "drxId required (push first via /doctors)" }, { status: 400 });
@@ -74,6 +74,15 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       return NextResponse.json({ ok: true, result: "updated" });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
+      // Transient abort (e.g. search timeout): requeue as pending instead of
+      // failing, up to 5 attempts.
+      if (/abort/i.test(msg) && (q.attempts ?? 0) < 5) {
+        await pool.query(
+          `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, fail_reason=$2, finished_at=NULL, updated_at=now() WHERE id=$1`,
+          [runId, `retryable: ${msg}`.slice(0, 300)]
+        );
+        return NextResponse.json({ ok: true, result: "pending", reason: msg.slice(0, 300) });
+      }
       await pool.query(
         `UPDATE doctor_update_runs SET status='failed', result='failed', fail_reason=$2, finished_at=now(), updated_at=now() WHERE id=$1`,
         [runId, msg.slice(0, 300)]
