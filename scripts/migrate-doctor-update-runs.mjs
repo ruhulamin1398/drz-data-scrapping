@@ -17,7 +17,7 @@ CREATE TABLE IF NOT EXISTS doctor_update_runs (
   doctor_queue_id BIGINT NOT NULL REFERENCES doctor_queue(id) ON DELETE CASCADE,
   drx_id TEXT,
   source_url TEXT NOT NULL,
-  type TEXT NOT NULL DEFAULT 'photo' CHECK (type IN ('photo')),
+  type TEXT NOT NULL DEFAULT 'photo' CHECK (type IN ('photo','experience')),
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processing','success','failed','skipped')),
   options JSONB NOT NULL DEFAULT '{"skipIfPhotoExists": true}',
   result TEXT CHECK (result IN ('updated','skipped','failed')),
@@ -32,6 +32,8 @@ CREATE TABLE IF NOT EXISTS doctor_update_runs (
 );`);
 // Existing tables keep the old 4-value CHECK — widen it idempotently.
 await c.query(`ALTER TABLE doctor_update_runs DROP CONSTRAINT IF EXISTS doctor_update_runs_status_check`);
+await c.query(`ALTER TABLE doctor_update_runs DROP CONSTRAINT IF EXISTS doctor_update_runs_type_check`);
+await c.query(`ALTER TABLE doctor_update_runs ADD CONSTRAINT doctor_update_runs_type_check CHECK (type IN ('photo','experience'))`).catch(() => {});
 await c.query(`ALTER TABLE doctor_update_runs ADD CONSTRAINT doctor_update_runs_status_check CHECK (status IN ('pending','processing','success','failed','skipped'))`).catch(() => {});
 // Backfill pilot rows: success+skipped → first-class skipped status.
 await c.query(`UPDATE doctor_update_runs SET status='skipped', updated_at=now() WHERE status='success' AND result='skipped'`).catch(() => {});

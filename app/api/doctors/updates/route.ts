@@ -39,14 +39,18 @@ export async function GET(req: NextRequest) {
   }
 }
 
-// POST /api/doctors/updates { doctorQueueIds: number[], type?: "photo", options?: { skipIfPhotoExists } }
+// POST /api/doctors/updates { doctorQueueIds: number[], type?: "photo"|"experience", options? }
 // or { bulk: { status?, specialty?, city?, limit? }, type?, options? } — enqueues all matching
 // pushed doctors (drx_id NOT NULL). Partial unique skips already-active rows.
 export async function POST(req: NextRequest) {
   try {
     const b = await req.json();
-    const type = b.type === "photo" ? "photo" : "photo";
+    const type = b.type === "experience" ? "experience" : "photo";
     const skipIfPhotoExists = b.options?.skipIfPhotoExists !== false;
+    const skipIfExperienceSet = b.options?.skipIfExperienceSet !== false;
+    const options = type === "experience"
+      ? { skipIfExperienceSet }
+      : { skipIfPhotoExists };
     const pool = db();
     let targets: { id: number; drx_id: string | null; source_url: string }[] = [];
     if (Array.isArray(b.doctorQueueIds) && b.doctorQueueIds.length) {
@@ -79,7 +83,7 @@ export async function POST(req: NextRequest) {
         `INSERT INTO doctor_update_runs (doctor_queue_id, drx_id, source_url, type, status, options)
          VALUES ($1, $2, $3, $4, 'pending', $5)
          ON CONFLICT (doctor_queue_id, type) WHERE status IN ('pending','processing') DO NOTHING`,
-        [t.id, t.drx_id, t.source_url, type, JSON.stringify({ skipIfPhotoExists })]
+        [t.id, t.drx_id, t.source_url, type, JSON.stringify(options)]
       ).catch((e: unknown) => {
         // Table missing (migration not run yet) → surface clearly.
         throw e;

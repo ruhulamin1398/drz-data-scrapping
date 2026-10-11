@@ -5,9 +5,9 @@ import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 
 type Run = {
   id: number; doctor_queue_id: number; doctor_name: string | null;
-  drx_id: string | null; source_url: string; type: "photo";
+  drx_id: string | null; source_url: string; type: "photo" | "experience";
   status: "pending" | "processing" | "success" | "failed" | "skipped";
-  options: { skipIfPhotoExists?: boolean };
+  options: { skipIfPhotoExists?: boolean; skipIfExperienceSet?: boolean };
   result: "updated" | "skipped" | "failed" | null;
   prev_photo: string | null; new_photo: string | null;
   fail_reason: string | null; note: string | null;
@@ -22,6 +22,7 @@ export default function DoctorUpdates() {
   const [filter, setFilter] = useState<"all" | "pending" | "processing" | "success" | "failed" | "skipped">("all");
   const [cands, setCands] = useState<Cand[]>([]);
   const [sel, setSel] = useState<number[]>([]);
+  const [utility, setUtility] = useState<"photo" | "experience">("photo");
   const [skip, setSkip] = useState(true);
   const [msg, setMsg] = useState("");
   const [busy, setBusy] = useState(false);
@@ -36,7 +37,6 @@ export default function DoctorUpdates() {
   async function loadRuns(f = filter) {
     const q = new URLSearchParams({ limit: "100" });
     if (f !== "all") q.set("status", f);
-    q.set("type", "photo");
     const r = await fetch(`/api/doctors/updates?${q.toString()}`);
     const j = await r.json();
     if (!j.error) { setRuns(j.items); setCounts(j.counts); }
@@ -84,9 +84,12 @@ export default function DoctorUpdates() {
   async function enqueueSelected() {
     if (!sel.length) return;
     setBusy(true); setMsg("");
+    const options = utility === "experience"
+      ? { skipIfExperienceSet: skip }
+      : { skipIfPhotoExists: skip };
     const r = await fetch("/api/doctors/updates", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ doctorQueueIds: sel, type: "photo", options: { skipIfPhotoExists: skip } }),
+      body: JSON.stringify({ doctorQueueIds: sel, type: utility, options }),
     });
     const j = await r.json();
     setBusy(false);
@@ -97,9 +100,12 @@ export default function DoctorUpdates() {
 
   async function enqueueAllPushed() {
     setBusy(true); setMsg("");
+    const options = utility === "experience"
+      ? { skipIfExperienceSet: skip }
+      : { skipIfPhotoExists: skip };
     const r = await fetch("/api/doctors/updates", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bulk: { status: "success", limit: 500 }, type: "photo", options: { skipIfPhotoExists: skip } }),
+      body: JSON.stringify({ bulk: { status: "success", limit: 500 }, type: utility, options }),
     });
     const j = await r.json();
     setBusy(false);
@@ -127,13 +133,18 @@ export default function DoctorUpdates() {
     setViewId(null);
     setEditId(r.id);
     setNoteDraft(r.note ?? "");
-    setSkipDraft(r.options?.skipIfPhotoExists !== false);
+    setSkipDraft(r.type === "experience"
+      ? (r.options?.skipIfExperienceSet !== false)
+      : (r.options?.skipIfPhotoExists !== false));
   }
 
   async function saveEdit(r: Run) {
-    const body: { note?: string; skipIfPhotoExists?: boolean } = {};
+    const body: { note?: string; skipIfPhotoExists?: boolean; skipIfExperienceSet?: boolean } = {};
     if (noteDraft !== (r.note ?? "")) body.note = noteDraft;
-    if (r.status === "pending" && skipDraft !== (r.options?.skipIfPhotoExists !== false)) body.skipIfPhotoExists = skipDraft;
+    if (r.status === "pending") {
+      if (r.type === "experience" && skipDraft !== (r.options?.skipIfExperienceSet !== false)) body.skipIfExperienceSet = skipDraft;
+      if (r.type === "photo" && skipDraft !== (r.options?.skipIfPhotoExists !== false)) body.skipIfPhotoExists = skipDraft;
+    }
     if (!Object.keys(body).length) { setEditId(null); return; }
     const res = await fetch(`/api/doctors/updates/${r.id}`, {
       method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -165,7 +176,7 @@ export default function DoctorUpdates() {
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-8">
-      <h1 className="text-xl font-bold text-text-primary">Doctor updates — photo</h1>
+      <h1 className="text-xl font-bold text-text-primary">Doctor updates</h1>
       <p className="mt-1 text-sm text-text-secondary">
         Independent queue. Pick utility + option, enqueue to pending, cron (Render) or Run-now processes. History kept per run.
       </p>
@@ -184,12 +195,14 @@ export default function DoctorUpdates() {
       <div className="mt-4 rounded-2xl border border-border bg-surface p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
           <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">Utility</label>
-          <select value="photo" disabled className="rounded-xl border border-border bg-surface-alt px-3 py-2 text-sm opacity-70">
+          <select value={utility} onChange={(e) => setUtility(e.target.value as "photo" | "experience")}
+            className="rounded-xl border border-border bg-surface-alt px-3 py-2 text-sm">
             <option value="photo">photo</option>
+            <option value="experience">experience</option>
           </select>
           <label className="flex items-center gap-2 text-sm text-text-primary">
             <input type="checkbox" checked={skip} onChange={(e) => setSkip(e.target.checked)} />
-            Skip if photo exists
+            {utility === "experience" ? "Skip if experience set" : "Skip if photo exists"}
           </label>
         </div>
         <div className="mt-3 flex flex-wrap gap-2 text-xs">
@@ -283,34 +296,46 @@ export default function DoctorUpdates() {
             )}
             {viewId === r.id && (
               <div className="mt-2 rounded-xl bg-surface-alt p-3 text-xs">
-                <div className="flex gap-3">
-                  {r.prev_photo && (
-                    <div className="flex-1">
-                      <p className="mb-1 font-semibold uppercase tracking-wide text-text-secondary">Before</p>
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={r.prev_photo} alt="previous photo" className="h-24 w-24 rounded-lg border border-border object-cover" />
-                      <p className="mt-1 break-all font-mono text-[10px] text-text-muted">{r.prev_photo}</p>
+                {r.type === "experience" ? (
+                  <dl className="grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-text-secondary">
+                    <dt>before</dt><dd className="text-text-primary">{r.note?.includes("experience") ? r.note.split("experience ")[1]?.split(" → ")[0] || "—" : "—"}</dd>
+                    <dt>after</dt><dd className="text-text-primary">{r.note?.includes("→") ? r.note.split("→ ")[1]?.split(" years")[0] + " years" : "—"}</dd>
+                    <dt>result</dt><dd className="text-text-primary">{r.result ?? "—"}</dd>
+                    <dt>finished</dt><dd className="text-text-primary">{r.finished_at ?? "—"}</dd>
+                    <dt>source</dt><dd className="break-all">{r.source_url}</dd>
+                  </dl>
+                ) : (
+                  <>
+                    <div className="flex gap-3">
+                      {r.prev_photo && (
+                        <div className="flex-1">
+                          <p className="mb-1 font-semibold uppercase tracking-wide text-text-secondary">Before</p>
+                          {/* eslint-disable-next-line @next/next/no-img-element */}
+                          <img src={r.prev_photo} alt="previous photo" className="h-24 w-24 rounded-lg border border-border object-cover" />
+                          <p className="mt-1 break-all font-mono text-[10px] text-text-muted">{r.prev_photo}</p>
+                        </div>
+                      )}
+                      <div className="flex-1">
+                        <p className="mb-1 font-semibold uppercase tracking-wide text-text-secondary">{r.new_photo ? "After" : "Photo"}</p>
+                        {r.new_photo ? (
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                            <img src={r.new_photo} alt="new photo" className="h-24 w-24 rounded-lg border border-border object-cover" />
+                            <p className="mt-1 break-all font-mono text-[10px] text-text-muted">{r.new_photo}</p>
+                          </>
+                        ) : (
+                          <p className="text-text-secondary">{r.prev_photo ? "unchanged (skipped)" : "no photo resolved"}</p>
+                        )}
+                      </div>
                     </div>
-                  )}
-                  <div className="flex-1">
-                    <p className="mb-1 font-semibold uppercase tracking-wide text-text-secondary">{r.new_photo ? "After" : "Photo"}</p>
-                    {r.new_photo ? (
-                      <>
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img src={r.new_photo} alt="new photo" className="h-24 w-24 rounded-lg border border-border object-cover" />
-                        <p className="mt-1 break-all font-mono text-[10px] text-text-muted">{r.new_photo}</p>
-                      </>
-                    ) : (
-                      <p className="text-text-secondary">{r.prev_photo ? "unchanged (skipped)" : "no photo resolved"}</p>
-                    )}
-                  </div>
-                </div>
-                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-text-secondary">
-                  <dt>skipIfExists</dt><dd className="text-text-primary">{r.options?.skipIfPhotoExists === false ? "off (force)" : "on"}</dd>
-                  <dt>result</dt><dd className="text-text-primary">{r.result ?? "—"}</dd>
-                  <dt>finished</dt><dd className="text-text-primary">{r.finished_at ?? "—"}</dd>
-                  <dt>source</dt><dd className="break-all">{r.source_url}</dd>
-                </dl>
+                    <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 font-mono text-[11px] text-text-secondary">
+                      <dt>skipIfExists</dt><dd className="text-text-primary">{r.options?.skipIfPhotoExists === false ? "off (force)" : "on"}</dd>
+                      <dt>result</dt><dd className="text-text-primary">{r.result ?? "—"}</dd>
+                      <dt>finished</dt><dd className="text-text-primary">{r.finished_at ?? "—"}</dd>
+                      <dt>source</dt><dd className="break-all">{r.source_url}</dd>
+                    </dl>
+                  </>
+                )}
                 {r.note && <p className="mt-2 text-text-primary">📝 {r.note}</p>}
                 {r.fail_reason && <p className="mt-1 font-mono text-[11px] text-danger">{r.fail_reason}</p>}
               </div>
@@ -324,7 +349,7 @@ export default function DoctorUpdates() {
                 {r.status === "pending" && (
                   <label className="mt-2 flex items-center gap-2 text-sm text-text-primary">
                     <input type="checkbox" checked={skipDraft} onChange={(e) => setSkipDraft(e.target.checked)} />
-                    Skip if photo exists
+                    {r.type === "experience" ? "Skip if experience set" : "Skip if photo exists"}
                   </label>
                 )}
                 <div className="mt-2 flex gap-2">

@@ -5,7 +5,8 @@ import { fetchSource, extractInfo, pushDrx } from "./scrape";
 import { parseExtracted } from "./parse";
 import { fetchDoctorProfile, fetchDoctorPhoto, extractDoctor, deptTitle, pushDoctor, extractDoctorAuto, saveResolvedSpecialty } from "./doctor";
 import { applyPhoto, updatePhoto } from "./doctor-update/photo";
-import type { PhotoOptions, UpdateRunRow } from "./doctor-update/types";
+import { applyExperience, updateExperience } from "./doctor-update/experience";
+import type { PhotoOptions, ExperienceOptions, UpdateRunRow } from "./doctor-update/types";
 import { visitUrl } from "./prewarm";
 
 export type QRow = {
@@ -221,8 +222,31 @@ async function claimUpdateRuns(pool: Pool, n: number): Promise<UpdateRunRow[]> {
 
 async function processUpdateRun(pool: Pool, q: UpdateRunRow): Promise<boolean> {
   try {
-    if (q.type !== "photo") throw new Error(`unknown update type: ${q.type}`);
-    if (!q.drx_id) throw new Error("drxId required for photo update (push first via /doctors)");
+    if (q.type !== "photo" && q.type !== "experience") throw new Error(`unknown update type: ${q.type}`);
+    if (!q.drx_id) throw new Error(`drxId required for ${q.type} update (push first via /doctors)`);
+    if (q.type === "experience") {
+      const opts = (q.options ?? {}) as unknown as ExperienceOptions;
+      const skipFlag = opts.skipIfExperienceSet !== false;
+      const outcome = await updateExperience(
+        { doctorQueueId: q.doctor_queue_id, drxId: q.drx_id, sourceUrl: q.source_url },
+        { skipIfExperienceSet: skipFlag }
+      );
+      if (outcome.action === "skipped") {
+        const note = `skipped: ${outcome.reason} | prev: ${outcome.prevValue || "none"} | skipIfExists=${skipFlag ? "on" : "off"}`;
+        await pool.query(
+          `UPDATE doctor_update_runs SET status='skipped', result='skipped', fail_reason=$2, note=$3, finished_at=now(), updated_at=now() WHERE id=$1`,
+          [q.id, outcome.reason.slice(0, 300), note.slice(0, 1000)]
+        );
+        return true;
+      }
+      await applyExperience(q.drx_id, outcome.newValue);
+      const note = `experience ${outcome.prevValue || "none"} → ${outcome.newValue} years | skipIfExists=${skipFlag ? "on" : "off"}`;
+      await pool.query(
+        `UPDATE doctor_update_runs SET status='success', result='updated', note=$2, fail_reason=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
+        [q.id, note.slice(0, 1000)]
+      );
+      return true;
+    }
     const opts = (q.options ?? {}) as PhotoOptions;
     const skipFlag = opts.skipIfPhotoExists !== false;
     const outcome = await updatePhoto(

@@ -1,0 +1,104 @@
+// Experience update utility (search-grounded). Independent: owns its source
+// decision — uses gemma-search (google_search) to find the doctor's experience,
+// calculates years from career dates when needed, handles missing/conflicting
+// data. Updates DRX `experienced_year`.
+import { throttle } from "./throttle";
+import type { ExperienceOptions, ExperienceOutcome, UpdateCtx } from "./types";
+
+const GAP_MS = 3000;
+const LANE = "experience-update";
+
+function drxBase(): string {
+  return (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
+}
+
+function drxToken(): string {
+  const t = process.env.DRX_ADMIN_TOKEN || "";
+  if (!t) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
+  return t;
+}
+
+const NEX_URL = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/rest/gemma-search";
+const NEX_MODEL = process.env.NEX_MODEL || "gemini";
+
+// Current experienced_year on DRX ("" when missing).
+export async function getCurrentExperience(drxId: string): Promise<string> {
+  await throttle(LANE, GAP_MS);
+  const res = await fetch(`${drxBase()}/api/v1/doctors/${drxId}`, {
+    headers: { Authorization: `Bearer ${drxToken()}` },
+  });
+  if (!res.ok) throw new Error(`drx get ${res.status}`);
+  const json = await res.json().catch(() => null);
+  const d = json?.data ?? {};
+  return String(d.experienced_year ?? "").trim();
+}
+
+// Search-grounded experience resolution via gemma-search.
+// Returns years as a string, or throws when nothing reliable is found.
+async function searchExperience(doctorName: string, sourceUrl: string): Promise<string> {
+  const prompt = `You are a medical-directory data researcher. Find the total years of professional experience for the doctor named "${doctorName}".
+
+Search the web for this doctor's profile, CV, biography, or any page mentioning their work history. The doctor's profile page is: ${sourceUrl}
+
+Rules:
+- Look for explicit statements like "X+ years of experience", "X years of experience", or "since YYYY".
+- If only career dates are given (e.g., "started practice in 2010", "MBBS in 2005"), calculate years from that start year to 2026.
+- If multiple conflicting numbers appear, pick the most specific/recent one and note the reasoning.
+- If no experience information is found anywhere, respond with exactly: NOT_FOUND
+- If found, respond with ONLY the number (e.g., "15"), no explanation, no units.
+
+Respond with ONLY the number or NOT_FOUND.`;
+
+  await throttle(LANE, GAP_MS);
+  const res = await fetch(NEX_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      tools: [{ google_search: {} }],
+    }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(`gemma-search failed: ${res.status} ${t.slice(0, 200)}`);
+  }
+  const data = await res.json().catch(() => null);
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+  if (!text || /NOT_FOUND/i.test(text)) {
+    throw new Error("no experience found via search");
+  }
+  const m = text.match(/(\d{1,2})/);
+  if (!m) throw new Error(`unparseable experience response: ${text.slice(0, 100)}`);
+  const years = Number(m[1]);
+  if (years < 0 || years > 60) throw new Error(`implausible experience years: ${years}`);
+  return String(years);
+}
+
+// Decide skipped vs update. Throws when experience cannot be resolved.
+export async function updateExperience(ctx: UpdateCtx, opts: ExperienceOptions): Promise<ExperienceOutcome> {
+  if (!ctx.drxId) throw new Error("drxId required for experience update (push first via /doctors)");
+  const prevValue = await getCurrentExperience(ctx.drxId);
+  if (opts.skipIfExperienceSet && prevValue) {
+    return { action: "skipped", reason: "experience already set, skip flag on", prevValue };
+  }
+  const name = ctx.doctorName || ctx.sourceUrl.split("/").pop()?.replace(/-/g, " ") || "doctor";
+  const years = await searchExperience(name, ctx.sourceUrl);
+  if (prevValue && prevValue === years) {
+    return { action: "skipped", reason: "same experience value, no-op", prevValue };
+  }
+  return { action: "update", prevValue, newValue: years };
+}
+
+// Persist: PATCH experienced_year on DRX.
+export async function applyExperience(drxId: string, years: string): Promise<void> {
+  await throttle(LANE, GAP_MS);
+  const res = await fetch(`${drxBase()}/api/v1/doctors/${drxId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${drxToken()}` },
+    body: JSON.stringify({ experienced_year: years }),
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => "");
+    throw new Error(t.slice(0, 300) || `drx patch ${res.status}`);
+  }
+}

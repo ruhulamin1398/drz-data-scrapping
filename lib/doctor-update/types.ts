@@ -1,21 +1,30 @@
 // Independent doctor-update utilities: each utility owns its source decision.
 // Photo never needs structure_md (raw HTML og:image only). Future utilities
 // (degrees, chambers) may reuse cached markdown or fetch fresh — caller never dictates.
-export type UpdateType = "photo";
+export type UpdateType = "photo" | "experience";
 
 export type UpdateCtx = {
   doctorQueueId: number;
   drxId: string | null;
   sourceUrl: string;
+  doctorName?: string | null;
 };
 
 export type PhotoOptions = {
   skipIfPhotoExists: boolean;
 };
 
+export type ExperienceOptions = {
+  skipIfExperienceSet: boolean;
+};
+
 export type PhotoOutcome =
   | { action: "skipped"; reason: string; prevPhoto: string }
   | { action: "update"; prevPhoto: string; newPhoto: string };
+
+export type ExperienceOutcome =
+  | { action: "skipped"; reason: string; prevValue: string }
+  | { action: "update"; prevValue: string; newValue: string };
 
 export type UpdateRunStatus = "pending" | "processing" | "success" | "failed" | "skipped";
 
