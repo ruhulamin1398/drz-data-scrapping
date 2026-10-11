@@ -29,7 +29,7 @@ export async function GET() {
   }
 }
 
-// PATCH /api/settings { enabled?, facilities_enabled?, doctors_enabled?, prewarm_enabled?, doctor_updates_enabled?, concurrency 1-100?, tasks_per_tick 1-50?, facilities_tasks_per_tick 1-50?, doctors_tasks_per_tick 1-50?, prewarm_tasks_per_tick 1-50?, doctor_updates_tasks_per_tick 1-50?, jina_keys? (multiline, one per line, replaces all) }
+// PATCH /api/settings { enabled?, facilities_enabled?, doctors_enabled?, prewarm_enabled?, doctor_updates_enabled?, concurrency 1-100?, tasks_per_tick 1+?, facilities_tasks_per_tick 1+?, doctors_tasks_per_tick 1+?, prewarm_tasks_per_tick 1+?, doctor_updates_tasks_per_tick 1+?, jina_keys? (multiline, one per line, replaces all) }
 export async function PATCH(req: NextRequest) {
   try {
     const b = await req.json();
@@ -40,7 +40,7 @@ export async function PATCH(req: NextRequest) {
     if (typeof b.doctors_enabled === "boolean") { vals.push(b.doctors_enabled); sets.push(`doctors_enabled=$${vals.length}`); }
     if (typeof b.prewarm_enabled === "boolean") { vals.push(b.prewarm_enabled); sets.push(`prewarm_enabled=$${vals.length}`); }
     if (typeof b.doctor_updates_enabled === "boolean") { vals.push(b.doctor_updates_enabled); sets.push(`doctor_updates_enabled=$${vals.length}`); }
-    const clampTick = (v: unknown) => Math.min(Math.max(1, Math.floor(Number(v)) || 1), 50);
+    const clampTick = (v: unknown) => Math.max(1, Math.floor(Number(v)) || 1);
     if (b.facilities_tasks_per_tick !== undefined) {
       vals.push(clampTick(b.facilities_tasks_per_tick)); sets.push(`facilities_tasks_per_tick=$${vals.length}`);
     }
@@ -58,7 +58,7 @@ export async function PATCH(req: NextRequest) {
       vals.push(c); sets.push(`concurrency=$${vals.length}`);
     }
     if (b.tasks_per_tick !== undefined) {
-      const t = Math.min(Math.max(1, Math.floor(Number(b.tasks_per_tick)) || 1), 50);
+      const t = Math.max(1, Math.floor(Number(b.tasks_per_tick)) || 1);
       vals.push(t); sets.push(`tasks_per_tick=$${vals.length}`);
     }
     if (typeof b.jina_keys === "string") {

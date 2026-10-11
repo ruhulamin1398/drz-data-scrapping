@@ -110,7 +110,7 @@ async function getSettings(pool: Pool) {
 
 const queueOn = (v: unknown) => v !== false;
 const clampTick = (v: unknown, fallback: unknown) =>
-  Math.min(Math.max(1, Math.floor(Number(v ?? fallback)) || 1), 50);
+  Math.max(1, Math.floor(Number(v ?? fallback)) || 1);
 
 // Doctor items are slow (~60-90s: jina + big-model extract + multi-push) and do not
 // survive Vercel's fire-and-forget after() window — a Vercel claim would just lock

@@ -37,6 +37,7 @@ export default function QueueSwitch({ on, onToggle, title, hint, children }: Pro
 }
 
 // Per-queue tasks-per-tick number field — lives inside a QueueSwitch card.
+// No upper cap — min 1 only.
 export function TasksPerTickInput({ value, onChange }: { value: number; onChange: (n: number) => void }) {
   return (
     <label className="flex items-center gap-2 text-sm">
@@ -47,9 +48,8 @@ export function TasksPerTickInput({ value, onChange }: { value: number; onChange
       <input
         type="number"
         min={1}
-        max={50}
         value={value}
-        onChange={(e) => onChange(Math.min(Math.max(1, Math.floor(Number(e.target.value)) || 1), 50))}
+        onChange={(e) => onChange(Math.max(1, Math.floor(Number(e.target.value)) || 1))}
         className="w-20 rounded-xl border border-border bg-surface-alt px-3 py-2 text-text-primary outline-none focus:border-primary"
       />
     </label>
