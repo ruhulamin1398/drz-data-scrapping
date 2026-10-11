@@ -169,11 +169,12 @@ export default function DoctorUpdates() {
   const toggle = (id: number) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
 
   // While this queue runs on the server this page is a monitor — refresh as it works.
+  // Deps include filter + utility so the interval never reloads with stale values.
   useEffect(() => {
     if (!queueRunning) return;
-    const t = setInterval(() => { loadRuns(); loadSettings(); }, 10000);
+    const t = setInterval(() => { loadRuns(filter, utility); loadSettings(); }, 10000);
     return () => clearInterval(t);
-  }, [queueRunning]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [queueRunning, filter, utility]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <main className="mx-auto max-w-3xl px-6 py-8">
