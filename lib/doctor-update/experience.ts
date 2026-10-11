@@ -21,8 +21,10 @@ function drxToken(): string {
 const NEX_URL = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/rest/gemma-search";
 const NEX_MODEL = process.env.NEX_MODEL || "gemini";
 
-// Current experienced_year on DRX ("" when missing).
-export async function getCurrentExperience(drxId: string): Promise<string> {
+// Current DRX profile (experience + identity for the search prompt).
+export async function getDrxDoctor(drxId: string): Promise<{
+  experienced_year: string; name: string; designation: string; specialityArea: string;
+}> {
   await throttle(LANE, GAP_MS);
   const res = await fetch(`${drxBase()}/api/v1/doctors/${drxId}`, {
     headers: { Authorization: `Bearer ${drxToken()}` },
@@ -30,7 +32,17 @@ export async function getCurrentExperience(drxId: string): Promise<string> {
   if (!res.ok) throw new Error(`drx get ${res.status}`);
   const json = await res.json().catch(() => null);
   const d = json?.data ?? {};
-  return String(d.experienced_year ?? "").trim();
+  return {
+    experienced_year: String(d.experienced_year ?? "").trim(),
+    name: String(d.name ?? "").trim(),
+    designation: String(d.designation ?? "").trim(),
+    specialityArea: String(d.specialityArea ?? "").trim(),
+  };
+}
+
+// Current experienced_year on DRX ("" when missing).
+export async function getCurrentExperience(drxId: string): Promise<string> {
+  return (await getDrxDoctor(drxId)).experienced_year;
 }
 
 // Search-grounded experience resolution via gemma-search.
@@ -94,14 +106,20 @@ Respond with ONLY the number or NOT_FOUND.`;
 }
 
 // Decide skipped vs update. Throws when experience cannot be resolved.
+// Identity comes from the database (doctor_queue row + DRX profile) — never
+// from the URL slug, so the search prompt always carries the real name.
 export async function updateExperience(ctx: UpdateCtx, opts: ExperienceOptions): Promise<ExperienceOutcome> {
   if (!ctx.drxId) throw new Error("drxId required for experience update (push first via /doctors)");
-  const prevValue = await getCurrentExperience(ctx.drxId);
+  const drx = await getDrxDoctor(ctx.drxId);
+  const prevValue = drx.experienced_year;
   if (opts.skipIfExperienceSet && prevValue) {
     return { action: "skipped", reason: "experience already set, skip flag on", prevValue };
   }
-  const name = ctx.doctorName || ctx.sourceUrl.split("/").pop()?.replace(/-/g, " ") || "doctor";
-  const years = await searchExperience(name, ctx.sourceUrl);
+  const name = ctx.doctorName?.trim() || drx.name;
+  if (!name) throw new Error("doctor name missing from database (doctor_queue + DRX)");
+  const identity = [name, ctx.designation?.trim() || drx.designation, ctx.speciality?.trim() || drx.specialityArea]
+    .filter(Boolean).join(", ");
+  const years = await searchExperience(identity, ctx.sourceUrl);
   if (prevValue && prevValue === years) {
     return { action: "skipped", reason: "same experience value, no-op", prevValue };
   }

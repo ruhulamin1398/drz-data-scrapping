@@ -8,6 +8,8 @@ export type UpdateCtx = {
   drxId: string | null;
   sourceUrl: string;
   doctorName?: string | null;
+  designation?: string | null;
+  speciality?: string | null;
 };
 
 export type PhotoOptions = {
