@@ -10,6 +10,7 @@ export type UpdateCtx = {
   doctorName?: string | null;
   designation?: string | null;
   speciality?: string | null;
+  cardText?: string | null;
 };
 
 export type PhotoOptions = {

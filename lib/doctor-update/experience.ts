@@ -22,9 +22,12 @@ const NEX_URL = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/a
 const NEX_MODEL = process.env.NEX_MODEL || "gemini";
 
 // Current DRX profile (experience + identity for the search prompt).
-export async function getDrxDoctor(drxId: string): Promise<{
+export type DrxDoctorProfile = {
   experienced_year: string; name: string; designation: string; specialityArea: string;
-}> {
+  workingIn: string; degrees: { title?: string; subject?: string; institution?: string }[];
+};
+
+export async function getDrxDoctor(drxId: string): Promise<DrxDoctorProfile> {
   await throttle(LANE, GAP_MS);
   const res = await fetch(`${drxBase()}/api/v1/doctors/${drxId}`, {
     headers: { Authorization: `Bearer ${drxToken()}` },
@@ -37,6 +40,8 @@ export async function getDrxDoctor(drxId: string): Promise<{
     name: String(d.name ?? "").trim(),
     designation: String(d.designation ?? "").trim(),
     specialityArea: String(d.specialityArea ?? "").trim(),
+    workingIn: String(d.workingIn ?? "").trim(),
+    degrees: Array.isArray(d.degrees) ? d.degrees : [],
   };
 }
 
@@ -105,6 +110,30 @@ Respond with ONLY the number or NOT_FOUND.`;
   return String(years);
 }
 
+// Build the search identity from everything the database knows: queue row
+// (name, specialty, card entry with degrees + workplace) + DRX profile
+// (designation, degrees with institutions, workingIn institution).
+function buildIdentity(ctx: UpdateCtx, drx: DrxDoctorProfile): string {
+  const name = ctx.doctorName?.trim() || drx.name;
+  if (!name) throw new Error("doctor name missing from database (doctor_queue + DRX)");
+  const designation = ctx.designation?.trim() || drx.designation;
+  const speciality = ctx.speciality?.trim() || drx.specialityArea;
+  const quals = drx.degrees
+    .map((g) => [g.title, g.subject ? `(${g.subject})` : "", g.institution].filter(Boolean).join(" ").trim())
+    .filter(Boolean);
+  const institutions = [...new Set(drx.degrees.map((g) => String(g.institution ?? "").trim()).filter(Boolean))];
+  const workingInInst = drx.workingIn.split(",").map((s) => s.trim()).filter(Boolean)[2];
+  if (workingInInst) institutions.unshift(workingInInst);
+  const bits = [
+    name,
+    designation, speciality,
+    quals.length ? `qualifications: ${quals.join(", ")}` : "",
+    institutions.length ? `institution: ${institutions.join("; ")}` : "",
+    ctx.cardText?.trim() ? `directory card: ${ctx.cardText.trim().replace(/\s+/g, " ").slice(0, 400)}` : "",
+  ].filter(Boolean);
+  return bits.join("; ");
+}
+
 // Decide skipped vs update. Throws when experience cannot be resolved.
 // Identity comes from the database (doctor_queue row + DRX profile) — never
 // from the URL slug, so the search prompt always carries the real name.
@@ -115,10 +144,7 @@ export async function updateExperience(ctx: UpdateCtx, opts: ExperienceOptions):
   if (opts.skipIfExperienceSet && prevValue) {
     return { action: "skipped", reason: "experience already set, skip flag on", prevValue };
   }
-  const name = ctx.doctorName?.trim() || drx.name;
-  if (!name) throw new Error("doctor name missing from database (doctor_queue + DRX)");
-  const identity = [name, ctx.designation?.trim() || drx.designation, ctx.speciality?.trim() || drx.specialityArea]
-    .filter(Boolean).join(", ");
+  const identity = buildIdentity(ctx, drx);
   const years = await searchExperience(identity, ctx.sourceUrl);
   if (prevValue && prevValue === years) {
     return { action: "skipped", reason: "same experience value, no-op", prevValue };

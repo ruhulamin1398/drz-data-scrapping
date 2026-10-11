@@ -228,13 +228,14 @@ async function processUpdateRun(pool: Pool, q: UpdateRunRow): Promise<boolean> {
       const opts = (q.options ?? {}) as unknown as ExperienceOptions;
       const skipFlag = opts.skipIfExperienceSet !== false;
       const dq = await pool.query(
-        `SELECT name, specialty_slug FROM doctor_queue WHERE id=$1`,
+        `SELECT name, specialty_slug, card_text FROM doctor_queue WHERE id=$1`,
         [q.doctor_queue_id]
-      ).catch(() => ({ rows: [] as { name: string | null; specialty_slug: string | null }[] }));
+      ).catch(() => ({ rows: [] as { name: string | null; specialty_slug: string | null; card_text: string | null }[] }));
       const outcome = await updateExperience(
         {
           doctorQueueId: q.doctor_queue_id, drxId: q.drx_id, sourceUrl: q.source_url,
           doctorName: dq.rows[0]?.name ?? null, speciality: dq.rows[0]?.specialty_slug ?? null,
+          cardText: dq.rows[0]?.card_text ?? null,
         },
         { skipIfExperienceSet: skipFlag }
       );
