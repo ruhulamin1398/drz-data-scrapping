@@ -50,20 +50,39 @@ Rules:
 Respond with ONLY the number or NOT_FOUND.`;
 
   await throttle(LANE, GAP_MS);
-  const res = await fetch(NEX_URL, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
-      tools: [{ google_search: {} }],
-    }),
-  });
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), 120000);
+  let res: Response;
+  try {
+    res = await fetch(NEX_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        tools: [{ google_search: {} }],
+      }),
+      signal: ctrl.signal,
+    });
+  } catch (e) {
+    throw new Error(`gemma-search request failed: ${e instanceof Error ? e.message : String(e)}`);
+  } finally {
+    clearTimeout(timer);
+  }
   if (!res.ok) {
     const t = await res.text().catch(() => "");
     throw new Error(`gemma-search failed: ${res.status} ${t.slice(0, 200)}`);
   }
   const data = await res.json().catch(() => null);
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? "";
+  // parts[0] is the model's thinking trace ({ thought: true }) — the real
+  // answer is in the non-thought text part(s). Never parse the thought.
+  const parts: { text?: string; thought?: boolean }[] =
+    data?.candidates?.[0]?.content?.parts ?? [];
+  const text = parts
+    .filter((p) => p && typeof p.text === "string" && !p.thought)
+    .map((p) => String(p.text).trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
   if (!text || /NOT_FOUND/i.test(text)) {
     throw new Error("no experience found via search");
   }
