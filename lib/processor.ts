@@ -538,7 +538,7 @@ export async function runProcessor(): Promise<TickResult> {
         OR locked_at < now() - INTERVAL '10 minutes')`
   ).catch(() => {});
 
-  const concurrency = Math.min(Math.max(1, s.concurrency || 1), 10);
+  const concurrency = Math.min(Math.max(1, s.concurrency || 1), 100);
   const facOn = queueOn(s.facilities_enabled);
   const docOn = queueOn(s.doctors_enabled);
   const pwOn = queueOn(s.prewarm_enabled);

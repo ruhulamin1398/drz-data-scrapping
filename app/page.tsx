@@ -247,7 +247,7 @@ export default function Home() {
     const r = await fetch(`/api/queue?limit=1000${scopeParam()}`);
     const j = await r.json();
     const rows: QRow[] = (j.items ?? []).filter((it: QRow) => urls.includes(it.source_url));
-    const workers = Math.min(Math.max(1, Math.floor(settings.concurrency) || 1), 10);
+    const workers = Math.min(Math.max(1, Math.floor(settings.concurrency) || 1), 100);
     stopRef.current = false;
     let cursor = 0;
     await Promise.all(

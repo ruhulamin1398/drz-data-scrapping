@@ -29,7 +29,7 @@ export async function GET() {
   }
 }
 
-// PATCH /api/settings { enabled?, facilities_enabled?, doctors_enabled?, prewarm_enabled?, doctor_updates_enabled?, concurrency 1-10?, tasks_per_tick 1-50?, facilities_tasks_per_tick 1-50?, doctors_tasks_per_tick 1-50?, prewarm_tasks_per_tick 1-50?, doctor_updates_tasks_per_tick 1-50?, jina_keys? (multiline, one per line, replaces all) }
+// PATCH /api/settings { enabled?, facilities_enabled?, doctors_enabled?, prewarm_enabled?, doctor_updates_enabled?, concurrency 1-100?, tasks_per_tick 1-50?, facilities_tasks_per_tick 1-50?, doctors_tasks_per_tick 1-50?, prewarm_tasks_per_tick 1-50?, doctor_updates_tasks_per_tick 1-50?, jina_keys? (multiline, one per line, replaces all) }
 export async function PATCH(req: NextRequest) {
   try {
     const b = await req.json();
@@ -54,7 +54,7 @@ export async function PATCH(req: NextRequest) {
       vals.push(clampTick(b.doctor_updates_tasks_per_tick)); sets.push(`doctor_updates_tasks_per_tick=$${vals.length}`);
     }
     if (b.concurrency !== undefined) {
-      const c = Math.min(Math.max(1, Math.floor(Number(b.concurrency)) || 1), 10);
+      const c = Math.min(Math.max(1, Math.floor(Number(b.concurrency)) || 1), 100);
       vals.push(c); sets.push(`concurrency=$${vals.length}`);
     }
     if (b.tasks_per_tick !== undefined) {
