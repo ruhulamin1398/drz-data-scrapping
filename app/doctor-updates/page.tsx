@@ -34,9 +34,10 @@ export default function DoctorUpdates() {
   const [skipDraft, setSkipDraft] = useState(true);
   const queueRunning = settings.enabled && settings.doctor_updates_enabled;
 
-  async function loadRuns(f = filter) {
+  async function loadRuns(f = filter, u = utility) {
     const q = new URLSearchParams({ limit: "100" });
     if (f !== "all") q.set("status", f);
+    q.set("type", u);
     const r = await fetch(`/api/doctors/updates?${q.toString()}`);
     const j = await r.json();
     if (!j.error) { setRuns(j.items); setCounts(j.counts); }
@@ -195,7 +196,7 @@ export default function DoctorUpdates() {
       <div className="mt-4 rounded-2xl border border-border bg-surface p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
           <label className="text-xs font-medium uppercase tracking-wide text-text-secondary">Utility</label>
-          <select value={utility} onChange={(e) => setUtility(e.target.value as "photo" | "experience")}
+          <select value={utility} onChange={(e) => { const u = e.target.value as "photo" | "experience"; setUtility(u); setFilter("all"); loadRuns("all", u); }}
             className="rounded-xl border border-border bg-surface-alt px-3 py-2 text-sm">
             <option value="photo">photo</option>
             <option value="experience">experience</option>
