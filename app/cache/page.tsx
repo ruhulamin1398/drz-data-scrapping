@@ -75,11 +75,114 @@ function Row({ k, v, mono }: { k: string; v: string; mono?: boolean }) {
   );
 }
 
+// ---- PageSpeed (pagespeed.web.dev data via PSI API) ----
+
+type PsLab = { id: string; title: string; display: string; value: number | null; unit: string | null; score: number | null };
+type PsField = { percentile: number | null; category: string | null } | null;
+type PsResult = {
+  ok: boolean;
+  error?: string;
+  needsKey?: boolean;
+  keyHint?: string;
+  finalUrl: string;
+  strategy: string;
+  score: number | null;
+  fetchTime: string | null;
+  cruxAvailable: boolean;
+  lab: { fcp: PsLab; lcp: PsLab; tbt: PsLab; cls: PsLab; si: PsLab; tti: PsLab; ttfb: PsLab };
+  field: { fcp: PsField; lcp: PsField; inp: PsField; cls: PsField; overallCategory: string | null };
+  originField: PsResult["field"] | null;
+  reportUrl: string;
+};
+
+function scoreColor(s: number | null) {
+  if (s === null) return "text-text-secondary";
+  if (s >= 90) return "text-success";
+  if (s >= 50) return "text-warning";
+  return "text-danger";
+}
+
+function scoreRing(s: number | null) {
+  if (s === null) return "stroke-text-muted";
+  if (s >= 90) return "stroke-success";
+  if (s >= 50) return "stroke-warning";
+  return "stroke-danger";
+}
+
+// good/poor cutoffs: [goodMax, poorMin]
+const MS_BANDS: Record<string, [number, number]> = {
+  fcp: [1800, 3000],
+  lcp: [2500, 4000],
+  tbt: [200, 600],
+  si: [3400, 5800],
+  tti: [3800, 7300],
+  ttfb: [800, 1800],
+  inp: [200, 500],
+};
+
+function msClass(kind: string, ms: number | null) {
+  if (ms === null) return "text-text-secondary";
+  const b = MS_BANDS[kind];
+  if (!b) return "text-text-primary";
+  if (ms <= b[0]) return "text-success";
+  if (ms > b[1]) return "text-danger";
+  return "text-warning";
+}
+
+function clsClass(v: number | null) {
+  if (v === null) return "text-text-secondary";
+  if (v <= 0.1) return "text-success";
+  if (v > 0.25) return "text-danger";
+  return "text-warning";
+}
+
+function fieldClass(cat: string | null) {
+  if (cat === "FAST") return "bg-success text-white";
+  if (cat === "AVERAGE") return "bg-warning text-white";
+  if (cat === "SLOW") return "bg-danger text-white";
+  return "bg-surface-alt text-text-secondary border border-border";
+}
+
+function fmtMs(ms: number | null) {
+  if (ms === null) return "—";
+  if (ms >= 1000) return `${(ms / 1000).toFixed(2)} s`;
+  return `${Math.round(ms)} ms`;
+}
+
+function LabCard({ m, kind, isCls }: { m: PsLab; kind: string; isCls?: boolean }) {
+  const cls = isCls ? clsClass(m.value) : msClass(kind, m.value);
+  return (
+    <div className="rounded-xl border border-border-light bg-surface-alt p-3">
+      <p className="text-[11px] font-medium text-text-secondary">{m.title}</p>
+      <p className={`mt-1 font-mono text-lg font-bold ${cls}`}>{m.display}</p>
+    </div>
+  );
+}
+
+function FieldRow({ k, f, fmt }: { k: string; f: PsField; fmt: (v: number | null) => string }) {
+  return (
+    <div className="flex items-center justify-between gap-4 border-b border-border-light py-2 last:border-0">
+      <span className="text-xs font-medium text-text-secondary">{k}</span>
+      <span className="flex items-center gap-2">
+        <span className="font-mono text-xs text-text-primary">{fmt(f?.percentile ?? null)}</span>
+        <span className={`rounded-full px-2 py-0.5 text-[10px] font-bold ${fieldClass(f?.category ?? null)}`}>
+          {f?.category ?? "—"}
+        </span>
+      </span>
+    </div>
+  );
+}
+
 export default function CachePage() {
   const [url, setUrl] = useState(EXAMPLE);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [r, setR] = useState<Result | null>(null);
+  const [strategy, setStrategy] = useState<"mobile" | "desktop">("mobile");
+  const [ps, setPs] = useState<PsResult | null>(null);
+  const [psLoading, setPsLoading] = useState(false);
+  const [psErr, setPsErr] = useState("");
+  const [psHint, setPsHint] = useState("");
 
   async function inspect(e?: React.FormEvent) {
     e?.preventDefault();
@@ -96,6 +199,26 @@ export default function CachePage() {
       setErr(e2 instanceof Error ? e2.message : String(e2));
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function runPagespeed() {
+    if (!url.trim()) return;
+    setPsLoading(true);
+    setPsErr("");
+    setPsHint("");
+    setPs(null);
+    try {
+      const res = await fetch(`/api/pagespeed?url=${encodeURIComponent(url.trim())}&strategy=${strategy}`);
+      const j = await res.json();
+      if (!res.ok || j.error) {
+        setPsErr(j.error || `HTTP ${res.status}`);
+        if (j.keyHint) setPsHint(j.keyHint);
+      } else setPs(j as PsResult);
+    } catch (e2) {
+      setPsErr(e2 instanceof Error ? e2.message : String(e2));
+    } finally {
+      setPsLoading(false);
     }
   }
 
@@ -229,6 +352,115 @@ export default function CachePage() {
               <li><b>s-maxage=31536000</b> = static prerender, fresh up to 1 year. <b>s-maxage=N + stale-while-revalidate=M</b> = ISR with N-second revalidation.</li>
               <li><b>CDN caveat:</b> on-demand <span className="font-mono">revalidateTag / revalidatePath</span> clears the Next.js server cache only — purge the CDN too or it keeps serving its copy until s-maxage expires.</li>
             </ul>
+          </div>
+          {/* page speed */}
+          <div className="rounded-2xl border border-border bg-surface p-4 shadow-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-sm font-semibold text-text-primary">PageSpeed</h2>
+              <span className="text-[11px] text-text-muted">same engine as pagespeed.web.dev (Lighthouse lab + real-user CrUX field)</span>
+              <span className="ml-auto flex items-center gap-2">
+                <span className="flex overflow-hidden rounded-lg border border-border text-[11px] font-medium">
+                  {(["mobile", "desktop"] as const).map((s) => (
+                    <button
+                      key={s}
+                      type="button"
+                      onClick={() => setStrategy(s)}
+                      className={`px-3 py-1.5 capitalize ${strategy === s ? "bg-primary text-white" : "text-text-secondary hover:bg-surface-alt"}`}
+                    >
+                      {s}
+                    </button>
+                  ))}
+                </span>
+                <button
+                  type="button"
+                  onClick={runPagespeed}
+                  disabled={psLoading}
+                  className="rounded-lg bg-primary px-3 py-1.5 text-[11px] font-semibold text-white disabled:opacity-50"
+                >
+                  {psLoading ? "Running… 30–60s" : "Run PageSpeed"}
+                </button>
+              </span>
+            </div>
+
+            {psErr && <p className="mt-3 text-xs text-danger">{psErr}</p>}
+            {psHint && (
+              <div className="mt-2 rounded-xl border border-warning bg-surface-alt p-3 text-xs leading-relaxed text-text-primary">
+                🔑 {psHint}
+                <span className="mt-1 block text-text-secondary">
+                  Console → APIs & Services → enable “PageSpeed Insights API” → Credentials → Create API key (no billing needed for the free quota).
+                </span>
+              </div>
+            )}
+
+            {ps && (
+              <div className="mt-3 space-y-4">
+                <div className="flex items-center gap-4">
+                  <svg viewBox="0 0 80 80" className="h-20 w-20 -rotate-90">
+                    <circle cx="40" cy="40" r="34" fill="none" strokeWidth="8" className="stroke-border" />
+                    <circle
+                      cx="40" cy="40" r="34" fill="none" strokeWidth="8" strokeLinecap="round"
+                      strokeDasharray={`${(2 * Math.PI * 34 * (ps.score ?? 0)) / 100} ${2 * Math.PI * 34}`}
+                      className={scoreRing(ps.score)}
+                    />
+                    <text x="40" y="46" textAnchor="middle" fontSize="20" fontWeight="bold" className="fill-text-primary" transform="rotate(90 40 40)">
+                      {ps.score ?? "—"}
+                    </text>
+                  </svg>
+                  <div className="text-xs text-text-secondary">
+                    <p className={`text-sm font-bold ${scoreColor(ps.score)}`}>
+                      {ps.score === null ? "No score" : ps.score >= 90 ? "Good" : ps.score >= 50 ? "Needs improvement" : "Poor"}
+                      <span className="ml-1 font-normal text-text-muted">· {ps.strategy} · lab test</span>
+                    </p>
+                    <p className="mt-1">Tested {ps.fetchTime ? fmtLocal(ps.fetchTime) : "—"}</p>
+                    <a href={ps.reportUrl} target="_blank" rel="noreferrer" className="mt-1 inline-block text-primary underline">
+                      Open full report on pagespeed.web.dev →
+                    </a>
+                  </div>
+                </div>
+
+                <div>
+                  <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">Lab (Lighthouse — this test run)</h3>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+                    <LabCard m={ps.lab.fcp} kind="fcp" />
+                    <LabCard m={ps.lab.lcp} kind="lcp" />
+                    <LabCard m={ps.lab.tbt} kind="tbt" />
+                    <LabCard m={ps.lab.cls} kind="cls" isCls />
+                    <LabCard m={ps.lab.si} kind="si" />
+                    <LabCard m={ps.lab.tti} kind="tti" />
+                  </div>
+                  <p className="mt-2 font-mono text-[11px] text-text-muted">Server response (TTFB): {ps.lab.ttfb.display}</p>
+                </div>
+
+                <div>
+                  <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-text-secondary">
+                    Field (CrUX — real users, last 28 days, p75)
+                  </h3>
+                  {!ps.cruxAvailable && (
+                    <p className="py-2 text-xs text-text-muted">No field data — URL too new or too little traffic for CrUX.</p>
+                  )}
+                  {ps.cruxAvailable && (
+                    <div className="grid gap-4 sm:grid-cols-2">
+                      <div className="rounded-xl border border-border-light bg-surface-alt p-3">
+                        <p className="mb-1 text-[11px] font-medium text-text-secondary">This page</p>
+                        <FieldRow k="First Contentful Paint" f={ps.field.fcp} fmt={fmtMs} />
+                        <FieldRow k="Largest Contentful Paint" f={ps.field.lcp} fmt={fmtMs} />
+                        <FieldRow k="Interaction to Next Paint" f={ps.field.inp} fmt={fmtMs} />
+                        <FieldRow k="Cumulative Layout Shift" f={ps.field.cls} fmt={(v) => (v === null ? "—" : String(v))} />
+                      </div>
+                      {ps.originField && (
+                        <div className="rounded-xl border border-border-light bg-surface-alt p-3">
+                          <p className="mb-1 text-[11px] font-medium text-text-secondary">Whole origin (site-wide)</p>
+                          <FieldRow k="First Contentful Paint" f={ps.originField.fcp} fmt={fmtMs} />
+                          <FieldRow k="Largest Contentful Paint" f={ps.originField.lcp} fmt={fmtMs} />
+                          <FieldRow k="Interaction to Next Paint" f={ps.originField.inp} fmt={fmtMs} />
+                          <FieldRow k="Cumulative Layout Shift" f={ps.originField.cls} fmt={(v) => (v === null ? "—" : String(v))} />
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </>
       )}
