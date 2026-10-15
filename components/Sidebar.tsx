@@ -45,6 +45,16 @@ const NAV = [
     ),
   },
   {
+    href: "/cache",
+    label: "Cache check",
+    desc: "HIT / MISS inspector",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-5 w-5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="m21 21-4.35-4.35M17 10.5a6.5 6.5 0 1 1-13 0 6.5 6.5 0 0 1 13 0Z" />
+      </svg>
+    ),
+  },
+  {
     href: "/settings",
     label: "Settings",
     desc: "processor config",
