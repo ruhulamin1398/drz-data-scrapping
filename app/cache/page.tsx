@@ -334,15 +334,15 @@ function PsiResultBlock({ ps }: { ps: PsResult }) {
   );
 }
 
-function PsiPanel({ title, s, now }: { title: string; s: Load<PsResult>; now: number }) {
+function RunPanel({ label, s, now, idleHint }: { label: string; s: Load<PsResult>; now: number; idleHint: string }) {
   const secs = s.startedAt ? Math.max(0, Math.round((now - s.startedAt) / 1000)) : 0;
   return (
     <div className="rounded-xl border border-border-light p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
-        <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">{title}</p>
+        <p className="text-xs font-semibold uppercase tracking-wide text-text-secondary">{label}</p>
         <StatusChip s={s} now={now} />
       </div>
-      {s.state === "idle" && <p className="py-6 text-center text-xs text-text-muted">Runs automatically with the check.</p>}
+      {s.state === "idle" && <p className="py-6 text-center text-xs text-text-muted">{idleHint}</p>}
       {s.state === "loading" && (
         <>
           <PsiSkeleton />
@@ -373,13 +373,16 @@ function PsiPanel({ title, s, now }: { title: string; s: Load<PsResult>; now: nu
 export default function CachePage() {
   const [url, setUrl] = useState(EXAMPLE);
   const [cache, setCache] = useState<Load<Result>>(idle);
-  const [psiM, setPsiM] = useState<Load<PsResult>>(idle);
-  const [psiD, setPsiD] = useState<Load<PsResult>>(idle);
+  const [psiM1, setPsiM1] = useState<Load<PsResult>>(idle);
+  const [psiM2, setPsiM2] = useState<Load<PsResult>>(idle);
+  const [psiD1, setPsiD1] = useState<Load<PsResult>>(idle);
+  const [psiD2, setPsiD2] = useState<Load<PsResult>>(idle);
   const runRef = useRef(0);
 
-  const anyLoading = cache.state === "loading" || psiM.state === "loading" || psiD.state === "loading";
+  const psiAll = [psiM1, psiM2, psiD1, psiD2];
+  const anyLoading = cache.state === "loading" || psiAll.some((s) => s.state === "loading");
   const now = useNow(anyLoading);
-  const allIdle = cache.state === "idle" && psiM.state === "idle" && psiD.state === "idle";
+  const allIdle = cache.state === "idle" && psiAll.every((s) => s.state === "idle");
 
   function run(e?: React.FormEvent) {
     e?.preventDefault();
@@ -389,8 +392,10 @@ export default function CachePage() {
     const startedAt = Date.now();
     const loading = { state: "loading" as const, data: null, err: "", hint: "", startedAt };
     setCache({ ...loading });
-    setPsiM({ ...loading });
-    setPsiD({ ...loading });
+    setPsiM1({ ...loading });
+    setPsiD1({ ...loading });
+    setPsiM2({ ...idle<PsResult>() });
+    setPsiD2({ ...idle<PsResult>() });
 
     const load = async <T,>(path: string, set: (v: Load<T>) => void) => {
       try {
@@ -408,10 +413,21 @@ export default function CachePage() {
       }
     };
 
-    // All three probes run in parallel — each section fills in as soon as it lands.
+    const psi = (strategy: "mobile" | "desktop") =>
+      `/api/pagespeed?strategy=${strategy}&url=${encodeURIComponent(u)}`;
+
+    // Cache probe runs alongside everything else.
     void load(`/api/cache-inspect?url=${encodeURIComponent(u)}`, setCache);
-    void load(`/api/pagespeed?strategy=mobile&url=${encodeURIComponent(u)}`, setPsiM);
-    void load(`/api/pagespeed?strategy=desktop&url=${encodeURIComponent(u)}`, setPsiD);
+
+    // Round 1 — both strategies in parallel. Round 2 starts only when round 1
+    // (mobile AND desktop) has fully settled, so each strategy gets 2 reports.
+    const r1m = load(psi("mobile"), setPsiM1);
+    const r1d = load(psi("desktop"), setPsiD1);
+    void Promise.allSettled([r1m, r1d]).then(() => {
+      if (runRef.current !== id) return; // superseded by a newer check
+      void load(psi("mobile"), setPsiM2);
+      void load(psi("desktop"), setPsiD2);
+    });
   }
 
   const r = cache.data;
@@ -421,8 +437,8 @@ export default function CachePage() {
       <div>
         <h1 className="text-xl font-bold text-text-primary">Cache inspector</h1>
         <p className="mt-1 text-sm text-text-secondary">
-          Paste any page URL and press Check — cache HIT/MISS, hot vs cold render, freshness, and PageSpeed (mobile
-          + desktop) all run in parallel.
+          Paste any page URL and press Check — cache HIT/MISS, hot vs cold render, freshness, and PageSpeed: 2 mobile
+          + 2 desktop Lighthouse runs.
         </p>
       </div>
 
@@ -453,14 +469,15 @@ export default function CachePage() {
           </div>
         </div>
         <p className="mt-2 text-[11px] text-text-muted">
-          Cache probe takes ~2–4s; Google PageSpeed usually answers in 20–60s per strategy but can take up to ~3 min under load — both run in parallel.
+          Cache probe takes ~2–4s. PageSpeed runs each strategy <b>twice</b> — round 1 (mobile + desktop) in parallel,
+          round 2 starts automatically once round 1 finishes. Up to 200s per run.
         </p>
       </form>
 
       {allIdle && (
         <div className="rounded-2xl border border-border bg-surface-alt p-4 text-xs leading-relaxed text-text-secondary">
-          ℹ Enter a URL and press <b>Check</b> — the cache verdict appears within a few seconds, PageSpeed panels fill
-          in when Google finishes (each shows a live timer while running).
+          ℹ Enter a URL and press <b>Check</b> — the cache verdict appears within a few seconds. PageSpeed runs 4
+          Lighthouse tests total (2 mobile + 2 desktop): round 1 in parallel, then round 2, each with a live timer.
         </div>
       )}
 
@@ -555,15 +572,29 @@ export default function CachePage() {
         )}
       </section>
 
-      {/* page speed — both strategies in parallel */}
+      {/* page speed — 2 runs per strategy */}
       <section className="rounded-2xl border border-border bg-surface p-4 shadow-sm">
         <div className="mb-3 flex flex-wrap items-center gap-2">
           <h2 className="text-sm font-semibold text-text-primary">PageSpeed</h2>
-          <span className="text-[11px] text-text-muted">pagespeed.web.dev engine · Lighthouse lab + CrUX field</span>
+          <span className="text-[11px] text-text-muted">
+            pagespeed.web.dev engine · 2 runs per strategy — round 2 starts after round 1 finishes
+          </span>
         </div>
-        <div className="grid gap-3 lg:grid-cols-2">
-          <PsiPanel title="📱 Mobile" s={psiM} now={now} />
-          <PsiPanel title="🖥 Desktop" s={psiD} now={now} />
+        <div className="space-y-5">
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">📱 Mobile</p>
+            <div className="grid gap-3 lg:grid-cols-2">
+              <RunPanel label="Run 1" s={psiM1} now={now} idleHint="Runs automatically with the check." />
+              <RunPanel label="Run 2" s={psiM2} now={now} idleHint="Starts after round 1 (mobile + desktop) finishes." />
+            </div>
+          </div>
+          <div>
+            <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-text-secondary">🖥 Desktop</p>
+            <div className="grid gap-3 lg:grid-cols-2">
+              <RunPanel label="Run 1" s={psiD1} now={now} idleHint="Runs automatically with the check." />
+              <RunPanel label="Run 2" s={psiD2} now={now} idleHint="Starts after round 1 (mobile + desktop) finishes." />
+            </div>
+          </div>
         </div>
       </section>
 
@@ -577,6 +608,7 @@ export default function CachePage() {
           <li><b>DYNAMIC / BYPASS</b> (<span className="font-mono">private, no-cache, no-store</span>) — route opts out of caching; every visit is cold by design.</li>
           <li><b>s-maxage=31536000</b> = static prerender (fresh up to 1 year). <b>s-maxage=N + stale-while-revalidate=M</b> = ISR with N-second revalidation.</li>
           <li><b>Lighthouse FAILED_DOCUMENT_REQUEST</b> — Google&rsquo;s crawler couldn&rsquo;t load that specific page (heavy/slow, redirect, or bot protection). Other probes still work.</li>
+          <li><b>2 runs per strategy</b> — Lighthouse scores naturally vary run to run; compare Run 1 vs Run 2. If Google just analyzed the URL seconds ago, Run 2 may return Google&rsquo;s cached copy (same fetch time).</li>
           <li><b>CDN caveat:</b> on-demand <span className="font-mono">revalidateTag / revalidatePath</span> clears the Next.js server cache only — purge the CDN too.</li>
         </ul>
       </div>
