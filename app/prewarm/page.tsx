@@ -124,7 +124,7 @@ export default function Prewarm() {
     });
   }
 
-  // Browser-driven single visit: visit -> mark. HTTP <400 = success.
+  // Browser-driven single revalidate: request -> mark. warmed (<400 render) = success.
   async function processOne(q: PRow) {
     setActive((a) => (a.includes(q.source_url) ? a : [...a, q.source_url]));
     try {
@@ -137,7 +137,7 @@ export default function Prewarm() {
       if (!v.ok) throw new Error(vj.error || `visit ${v.status}`);
       await patch(q.source_url, vj.ok
         ? { status: "success", httpCode: vj.code, durationMs: vj.durationMs, failReason: null }
-        : { status: "failed", httpCode: vj.code, durationMs: vj.durationMs, failReason: `http ${vj.code}` });
+        : { status: "failed", httpCode: vj.code, durationMs: vj.durationMs, failReason: vj.reason || `http ${vj.code}` });
       return !!vj.ok;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -223,7 +223,7 @@ export default function Prewarm() {
     <main className="mx-auto max-w-3xl px-6 py-8">
       <h1 className="text-xl font-bold text-text-primary">Pre-warm queue</h1>
       <p className="mt-1 text-sm text-text-secondary">
-        ISR cache warming — load a sitemap, then visit every page so caches generate. Server cron processes it; Retry runs instantly here.
+        ISR cache warming — load a sitemap, then revalidate every page through the frontend API so caches generate. Server cron processes it; Retry runs instantly here.
       </p>
 
       <div className="mt-4">
@@ -231,7 +231,7 @@ export default function Prewarm() {
           on={settings.prewarm_enabled}
           onToggle={() => setPrewarm(!settings.prewarm_enabled)}
           title={`Pre-warm queue ${settings.prewarm_enabled ? "on" : "off"}`}
-          hint={!settings.enabled ? "Needs Processor active in Settings to run" : settings.prewarm_enabled ? "Cron visits pages" : "Pre-warm skipped by cron"}
+          hint={!settings.enabled ? "Needs Processor active in Settings to run" : settings.prewarm_enabled ? "Cron revalidates pages" : "Pre-warm skipped by cron"}
         >
           <TasksPerTickInput value={settings.prewarm_tasks_per_tick} onChange={saveTasksPerTick} />
         </QueueSwitch>

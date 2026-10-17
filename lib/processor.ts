@@ -7,7 +7,7 @@ import { fetchDoctorProfile, fetchDoctorPhoto, extractDoctor, deptTitle, pushDoc
 import { applyPhoto, updatePhoto } from "./doctor-update/photo";
 import { applyExperience, updateExperience } from "./doctor-update/experience";
 import type { PhotoOptions, ExperienceOptions, UpdateRunRow } from "./doctor-update/types";
-import { visitUrl } from "./prewarm";
+import { revalidateUrl } from "./prewarm";
 
 export type QRow = {
   id: number; title: string; source_url: string;
@@ -325,13 +325,14 @@ async function claimPrewarm(pool: Pool, n: number): Promise<PrewarmRow[]> {
   }
 }
 
-// Server-side pre-warm visit: one GET warms the ISR cache. <400 = success.
+// Server-side pre-warm: one revalidate call marks the page stale, cold-renders
+// it and stamps the sitemap store. warmed=true (<400 render) = success.
 async function processPrewarmItem(pool: Pool, q: PrewarmRow): Promise<boolean> {
   try {
-    const v = await visitUrl(q.source_url);
+    const v = await revalidateUrl(q.source_url);
     await pool.query(
       `UPDATE prewarm_queue SET status=$2, http_code=$3, duration_ms=$4, fail_reason=$5, updated_at=now() WHERE source_url=$1`,
-      [q.source_url, v.ok ? "success" : "failed", v.code, v.durationMs, v.ok ? null : `http ${v.code}`]
+      [q.source_url, v.ok ? "success" : "failed", v.code, v.durationMs, v.ok ? null : (v.reason ?? `http ${v.code}`)]
     );
     return v.ok;
   } catch (err) {

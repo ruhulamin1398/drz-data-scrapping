@@ -1,39 +1,58 @@
-// Pre-warm (ISR cache warming) core: sitemap load + single-URL visit.
-// One visit = one plain GET; HTTP < 400 counts as warmed (success).
+// Pre-warm (ISR cache warming) core: sitemap load + single-URL revalidate.
+// One call = one POST to the frontend admin revalidate-page endpoint, which
+// marks the page stale, cold-renders it (prewarm) and stamps the sitemap store.
+// warmed=true (<400 render) counts as warmed (success).
 import { Pool } from "pg";
 
-export const VISIT_TIMEOUT_MS = 30000;
+export const REVALIDATE_TIMEOUT_MS = 30000;
 
-export type VisitResult = { ok: boolean; code: number; durationMs: number };
+export type RevalidateResult = { ok: boolean; code: number; durationMs: number; reason?: string };
 
-// GET a page so its ISR cache generates. Throws on network/timeout;
-// resolves with the status code otherwise (<400 = ok).
-export async function visitUrl(url: string, timeoutMs = VISIT_TIMEOUT_MS): Promise<VisitResult> {
+const revalidateBase = () =>
+  (process.env.REVALIDATE_BASE_URL || "https://frontend-9028.doctorzonebd.com").replace(/\/+$/, "");
+
+// POST one page path ("/doctors/x"; origin stripped, query/fragment rejected).
+// Throws on network/timeout; resolves with the outcome otherwise. Success =
+// HTTP 2xx and warmed[0].warmed === true; store.missing / store.error are
+// informational, not failures.
+export async function revalidateUrl(url: string, timeoutMs = REVALIDATE_TIMEOUT_MS): Promise<RevalidateResult> {
   if (!url) throw new Error("url required");
+  let path: string;
+  try {
+    path = new URL(url.trim()).pathname;
+  } catch {
+    throw new Error(`invalid url: ${url}`);
+  }
+  const secret = process.env.REVALIDATE_SECRET;
+  if (!secret) throw new Error("REVALIDATE_SECRET missing");
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   const started = Date.now();
   try {
-    const res = await fetch(url, {
+    const res = await fetch(`${revalidateBase()}/api/admin/revalidate-page`, {
+      method: "POST",
       signal: ctrl.signal,
-      redirect: "follow",
-      headers: { "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (DRZ prewarm)" },
+      headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
+      body: JSON.stringify({ url: path }),
     });
-    // Drain the body so the page fully renders/caches upstream.
-    await res.arrayBuffer().catch(() => {});
-    const code = res.status;
-    return { ok: code < 400, code, durationMs: Date.now() - started };
+    const data = await res.json().catch(() => null) as { warmed?: { warmed?: boolean; status?: number }[] } | null;
+    const w = data?.warmed?.[0];
+    const code = w?.status ?? res.status;
+    const ok = res.ok && w?.warmed === true;
+    return { ok, code, durationMs: Date.now() - started, reason: ok ? undefined : `http ${code}` };
   } catch (e) {
-    if ((e as Error)?.name === "AbortError") throw new Error(`visit timeout after ${timeoutMs}ms`);
+    if ((e as Error)?.name === "AbortError") throw new Error(`revalidate timeout after ${timeoutMs}ms`);
     throw e;
   } finally {
     clearTimeout(t);
   }
 }
 
+const SITEMAP_TIMEOUT_MS = 30000;
+
 async function fetchXml(url: string): Promise<string> {
   const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), VISIT_TIMEOUT_MS);
+  const t = setTimeout(() => ctrl.abort(), SITEMAP_TIMEOUT_MS);
   try {
     const res = await fetch(url, {
       signal: ctrl.signal,
