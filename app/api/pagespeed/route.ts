@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 
 // Same data source pagespeed.web.dev uses: PSI v5 (Lighthouse lab + CrUX field).
-// Runs can take 30-60s, so allow a long serverless window.
+// Google PSI can take up to ~3 min under load. On self-hosted/VPS Next.js
+// maxDuration is ignored — the internal abort below is the real limit.
+// 220s on Vercel keeps our clean JSON timeout ahead of any platform kill.
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
+export const maxDuration = 220;
 
 function isBlockedHost(host: string): boolean {
   const h = host.toLowerCase().split(":")[0];
@@ -66,7 +68,7 @@ export async function GET(req: NextRequest) {
       (key ? `&key=${encodeURIComponent(key)}` : "");
 
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 55000);
+    const timer = setTimeout(() => ctrl.abort(), 200000);
     let res: Response;
     try {
       res = await fetch(psi, { cache: "no-store", signal: ctrl.signal });
@@ -74,7 +76,7 @@ export async function GET(req: NextRequest) {
       const aborted = e instanceof Error && e.name === "AbortError";
       return NextResponse.json(
         {
-          error: aborted ? "PageSpeed timed out (>55s)" : `PageSpeed request failed: ${e instanceof Error ? e.message : String(e)}`,
+          error: aborted ? "PageSpeed timed out (>200s)" : `PageSpeed request failed: ${e instanceof Error ? e.message : String(e)}`,
           hint: aborted ? "Google's Lighthouse can occasionally queue for minutes under load. Retry — repeat runs are often served from Google's cache and return in seconds." : undefined,
         },
         { status: 504 }

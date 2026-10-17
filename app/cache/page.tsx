@@ -335,6 +335,7 @@ function PsiResultBlock({ ps }: { ps: PsResult }) {
 }
 
 function PsiPanel({ title, s, now }: { title: string; s: Load<PsResult>; now: number }) {
+  const secs = s.startedAt ? Math.max(0, Math.round((now - s.startedAt) / 1000)) : 0;
   return (
     <div className="rounded-xl border border-border-light p-3">
       <div className="mb-2 flex items-center justify-between gap-2">
@@ -342,7 +343,17 @@ function PsiPanel({ title, s, now }: { title: string; s: Load<PsResult>; now: nu
         <StatusChip s={s} now={now} />
       </div>
       {s.state === "idle" && <p className="py-6 text-center text-xs text-text-muted">Runs automatically with the check.</p>}
-      {s.state === "loading" && <PsiSkeleton />}
+      {s.state === "loading" && (
+        <>
+          <PsiSkeleton />
+          {secs > 90 && (
+            <p className="mt-2 text-[11px] leading-relaxed text-text-muted">
+              ⏳ Google is taking longer than usual ({secs}s) — Lighthouse queues under load. It gives up cleanly at
+              200s so you can retry (repeat runs often hit Google&rsquo;s cache and return in seconds).
+            </p>
+          )}
+        </>
+      )}
       {s.state === "error" && (
         <div className="space-y-2 py-2">
           <p className="text-xs text-danger">{s.err}</p>
@@ -442,7 +453,7 @@ export default function CachePage() {
           </div>
         </div>
         <p className="mt-2 text-[11px] text-text-muted">
-          Cache probe takes ~2–4s; Google PageSpeed needs 20–60s per strategy and runs both in parallel.
+          Cache probe takes ~2–4s; Google PageSpeed usually answers in 20–60s per strategy but can take up to ~3 min under load — both run in parallel.
         </p>
       </form>
 
