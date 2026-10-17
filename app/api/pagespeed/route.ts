@@ -17,8 +17,10 @@ function isBlockedHost(host: string): boolean {
 
 type LabMetric = { id: string; title: string; display: string; value: number | null; unit: string | null; score: number | null };
 
-function pickAudit(audits: Record<string, any>, id: string, fallbackTitle: string): LabMetric {
-  const a = audits?.[id];
+function pickAudit(audits: Record<string, unknown>, id: string, fallbackTitle: string): LabMetric {
+  const a = audits?.[id] as
+    | { title?: string; displayValue?: string; numericValue?: number; numericUnit?: string; score?: number }
+    | undefined;
   return {
     id,
     title: a?.title ?? fallbackTitle,
@@ -29,8 +31,8 @@ function pickAudit(audits: Record<string, any>, id: string, fallbackTitle: strin
   };
 }
 
-function pickField(metrics: Record<string, any> | undefined, key: string) {
-  const m = metrics?.[key];
+function pickField(metrics: Record<string, unknown> | undefined, key: string) {
+  const m = metrics?.[key] as { percentile?: number; category?: string } | undefined;
   if (!m) return null;
   return { percentile: m.percentile ?? null, category: m.category ?? null };
 }
@@ -69,23 +71,37 @@ export async function GET(req: NextRequest) {
     try {
       res = await fetch(psi, { cache: "no-store", signal: ctrl.signal });
     } catch (e) {
+      const aborted = e instanceof Error && e.name === "AbortError";
       return NextResponse.json(
-        { error: e instanceof Error && e.name === "AbortError" ? "PageSpeed timed out (>55s) — retry, repeat runs are faster (PSI caches)" : `PageSpeed request failed: ${e instanceof Error ? e.message : String(e)}` },
+        {
+          error: aborted ? "PageSpeed timed out (>55s)" : `PageSpeed request failed: ${e instanceof Error ? e.message : String(e)}`,
+          hint: aborted ? "Google's Lighthouse can occasionally queue for minutes under load. Retry — repeat runs are often served from Google's cache and return in seconds." : undefined,
+        },
         { status: 504 }
       );
     } finally {
       clearTimeout(timer);
     }
     if (!res.ok) {
-      const t = await res.text().catch(() => "");
+      const txt = await res.text().catch(() => "");
+      let msg = txt.slice(0, 300);
+      try {
+        const ej = JSON.parse(txt);
+        msg = String(ej?.error?.message ?? ej?.error ?? msg).slice(0, 400);
+      } catch {
+        /* keep raw text */
+      }
       const needsKey = res.status === 429 || res.status === 403;
+      const failedDoc = /FAILED_DOCUMENT_REQUEST/i.test(msg);
       return NextResponse.json(
         {
-          error: `PageSpeed API ${res.status}: ${t.slice(0, 300)}`,
+          error: `PageSpeed API ${res.status}: ${msg}`,
           needsKey,
-          keyHint: needsKey
+          hint: needsKey
             ? "Anonymous PageSpeed quota is exhausted. Free fix: enable 'PageSpeed Insights API' in Google Cloud Console → create an API key → add PAGESPEED_API_KEY=<key> to .env.local and restart."
-            : undefined,
+            : failedDoc
+              ? "Lighthouse (Google's crawler) couldn't load this page reliably: heavy/slow page, redirect chain, or bot protection on that path. The cache check above is unaffected. Try another URL (e.g. the homepage) to confirm."
+              : undefined,
         },
         { status: 502 }
       );
