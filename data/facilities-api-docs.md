@@ -110,5 +110,5 @@ Errors: 400 validation · 401/403 auth · 404 FACILITY_NOT_FOUND on :id routes.
 
 ## Example
 ```bash
-curl -s "https://api-9028.doctorzonebd.com/api/v1/facilities/20011?fields=id,name,socialLinks" | jq '.data.socialLinks'
+curl -s "https://api.doctorzonebd.com/api/v1/facilities/20011?fields=id,name,socialLinks" | jq '.data.socialLinks'
 ```

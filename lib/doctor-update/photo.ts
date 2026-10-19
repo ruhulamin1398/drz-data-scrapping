@@ -10,7 +10,7 @@ const GAP_MS = 3000;
 const LANE = "photo-update";
 
 function drxBase(): string {
-  return (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
+  return (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
 }
 
 function drxToken(): string {

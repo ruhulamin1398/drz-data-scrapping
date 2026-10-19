@@ -135,7 +135,7 @@ ${formatExamples()}
 Now extract from the following real page. Begin your response with { and end with }. Output ONLY the JSON object — no explanations, no repetition of these instructions. Content:
 ` + md;
   const promptLean =
-`Extract doctor info from the Jina markdown below. Output ONLY one JSON object, no fences, no commentary. Missing values are "" or [].
+    `Extract doctor info from the Jina markdown below. Output ONLY one JSON object, no fences, no commentary. Missing values are "" or [].
 Keys: name (full name WITH title, REQUIRED), designation (job title, REQUIRED, Title Case), specialityArea (X Specialist line), bmdcRegNo (from BMDC Reg. No line), gender (male/female from He-She pronouns), website (doctor's own external URL only), degrees (split qualification commas into {title,subject,institution,country}), workingIn (REQUIRED, lowercase "designation, ${deptSlug}, institution" with exactly two commas, no commas inside segments), phones (appointment numbers verbatim), email, biography (always ""), extraInformation (full descriptive paragraph), chambers ([{facilityName, address, serialTime verbatim, serialContactNumber, workingDays with all 7 day keys Sunday..Saturday mapping to [start,end] 24h HH:MM arrays, closed days []}]).
 Dept: slug "${deptSlug}", title "${deptName}". Specialty mapping by meaning and purpose: an "Acupuncture Specialist" (or any acupuncture-related specialty) is a form of physical medicine / rehabilitation therapy — it must map to the Physical Medicine department, not to any other specialty.
 ${cardText ? `Card entry:\n` + cardText + `\n` : ""}
@@ -286,7 +286,7 @@ export function chamberText(chambers: DoctorChamber[]): string {
 // Step 3: POST doctor, then POST each degree with doctorId, then POST each chamber
 // with doctorId + facilityId (matched) or facilityName (free text). Update in place when drxId given.
 export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated?: boolean; degrees: number; chambers: number }> {
-  const base = (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
+  const base = (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
   const token = process.env.DRX_ADMIN_TOKEN || "";
   if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
   if (!d.name || !d.departmentIds.length) throw new Error("name + departmentIds required");
@@ -530,7 +530,7 @@ function canonical(
 export async function resolveDepartmentIds(
   specialityArea: string, designation: string
 ): Promise<{ slug: string; ids: string[] }> {
-  const base = (process.env.DRX_API_BASE || "https://api-9028.doctorzonebd.com").replace(/\/$/, "");
+  const base = (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
   const token = process.env.DRX_ADMIN_TOKEN || "";
   if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
   const res = await fetch(`${base}/api/v1/departments?limit=100`, {
@@ -651,5 +651,5 @@ export async function saveResolvedSpecialty(
       department_ids = CASE WHEN department_ids='{}' THEN $3 ELSE department_ids END,
       updated_at=now() WHERE source_url=$1`,
     [sourceUrl, slug, ids]
-  ).catch(() => {});
+  ).catch(() => { });
 }
