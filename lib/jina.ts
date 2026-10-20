@@ -13,7 +13,7 @@ export async function loadJinaKey(): Promise<string> {
       .find((s) => s.length > 10);
     if (first) return first;
   } catch { /* pre-migration: env only */ }
-  const envKey = (process.env.JINA_API_KEY || "").trim();
+  const envKey = process.env.JINA_API_KEY?.trim();
   if (envKey) return envKey;
   throw new Error("no Jina key: add one on /settings or set JINA_API_KEY");
 }

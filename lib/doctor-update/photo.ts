@@ -1,6 +1,7 @@
 // Photo update utility (pilot). Independent: decides its own source (raw HTML
 // og:image via fetchDoctorPhoto), never touches structure_md, no AI needed.
 import { fetchDoctorPhoto } from "../doctor";
+import { env } from "../env";
 import { throttle } from "./throttle";
 import type { PhotoOptions, PhotoOutcome, UpdateCtx } from "./types";
 
@@ -10,13 +11,11 @@ const GAP_MS = 3000;
 const LANE = "photo-update";
 
 function drxBase(): string {
-  return (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
+  return env("DRX_API_BASE").replace(/\/$/, "");
 }
 
 function drxToken(): string {
-  const t = process.env.DRX_ADMIN_TOKEN || "";
-  if (!t) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
-  return t;
+  return env("DRX_ADMIN_TOKEN");
 }
 
 // Current hosted photo on DRX ("" when missing). Read-only, cheap.

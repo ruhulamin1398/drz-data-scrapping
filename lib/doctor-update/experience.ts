@@ -3,23 +3,19 @@
 // calculates years from career dates when needed, handles missing/conflicting
 // data. Updates DRX `experienced_year`.
 import { throttle } from "./throttle";
+import { env } from "../env";
 import type { ExperienceOptions, ExperienceOutcome, UpdateCtx } from "./types";
 
 const GAP_MS = 3000;
 const LANE = "experience-update";
 
 function drxBase(): string {
-  return (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
+  return env("DRX_API_BASE").replace(/\/$/, "");
 }
 
 function drxToken(): string {
-  const t = process.env.DRX_ADMIN_TOKEN || "";
-  if (!t) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
-  return t;
+  return env("DRX_ADMIN_TOKEN");
 }
-
-const NEX_URL = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/rest/gemma-search";
-const NEX_MODEL = process.env.NEX_MODEL || "gemini";
 
 // Current DRX profile (experience + identity for the search prompt).
 export type DrxDoctorProfile = {
@@ -71,7 +67,7 @@ Respond with ONLY the number or NOT_FOUND.`;
   const timer = setTimeout(() => ctrl.abort(), 120000);
   let res: Response;
   try {
-    res = await fetch(NEX_URL, {
+    res = await fetch(env("NEX_SEARCH_URL"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({

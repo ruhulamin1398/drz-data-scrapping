@@ -1,18 +1,17 @@
 import { NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { REQUIRED_ENV, OPTIONAL_ENV, missingEnv } from "@/lib/env";
 
-// GET /api/health — liveness + env presence + database reachability (no secrets leaked)
+// GET /api/health — liveness + env presence + database reachability (no secrets leaked).
+// `env` maps every known variable to present/absent; `missing` lists the required
+// vars that are not set, so a missing .env entry is visible here.
 export async function GET() {
-  const env = {
-    jina: !!process.env.JINA_API_KEY,
-    nexRouter: !!process.env.NEX_ROUTER_URL,
-    drxBase: !!process.env.DRX_API_BASE,
-    drxToken: !!process.env.DRX_ADMIN_TOKEN,
-    databaseUrl: !!process.env.DATABASE_URL,
-    cronSecret: !!process.env.CRON_SECRET,
-  };
+  const envPresence: Record<string, boolean> = {};
+  for (const k of [...REQUIRED_ENV, ...OPTIONAL_ENV]) envPresence[k] = !!process.env[k]?.trim();
+  const missing = missingEnv();
+  const databaseUrlPresent = !!process.env.DATABASE_URL?.trim();
   let database: { ok: boolean; latencyMs?: number; error?: string } = { ok: false, error: "DATABASE_URL missing" };
-  if (env.databaseUrl) {
+  if (databaseUrlPresent) {
     const started = Date.now();
     try {
       await db().query("SELECT 1");
@@ -21,9 +20,15 @@ export async function GET() {
       database = { ok: false, error: (e instanceof Error ? e.message : String(e)).slice(0, 200) };
     }
   }
-  const degraded = !database.ok;
+  const degraded = missing.length > 0 || !database.ok;
   return NextResponse.json(
-    { status: degraded ? "degraded" : "ok", time: new Date().toISOString(), env, database },
+    {
+      status: degraded ? "degraded" : "ok",
+      time: new Date().toISOString(),
+      env: envPresence,
+      missing,
+      database,
+    },
     { status: degraded ? 503 : 200 }
   );
 }

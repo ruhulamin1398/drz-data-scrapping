@@ -3,6 +3,7 @@
 // marks the page stale, cold-renders it (prewarm) and stamps the sitemap store.
 // warmed=true (<400 render) counts as warmed (success).
 import { Pool } from "pg";
+import { env } from "./env";
 
 export const REVALIDATE_TIMEOUT_MS = 30000;
 
@@ -15,47 +16,51 @@ type RevalidateResponse = {
   warmed?: { path?: string; warmed?: boolean; status?: number; error?: string }[];
 } | null;
 
-const revalidateBase = () =>
-  (process.env.REVALIDATE_BASE_URL || "https://www.doctorzonebd.com").replace(/\/+$/, "");
-
-// POST one page path ("/doctors/x"; origin stripped, query/fragment rejected).
-// Throws on network/timeout; resolves with the outcome otherwise. Success =
-// HTTP 2xx and warmed[0].warmed === true; store.missing / store.error are
-// informational, not failures.
-export async function revalidateUrl(url: string, timeoutMs = REVALIDATE_TIMEOUT_MS): Promise<RevalidateResult> {
+// POST one page path ("/doctors/x"; origin stripped, query/fragment rejected)
+// to the base URL configured on /prewarm (settings.revalidate_base_url — not an
+// env var, editable at any time). Throws on network/timeout; resolves with the
+// outcome otherwise. Success = HTTP 2xx and warmed[0].warmed === true;
+// store.missing / store.error are informational, not failures. Failures keep
+// the complete API response body in `reason` (no truncation).
+export async function revalidateUrl(url: string, baseUrl: string, timeoutMs = REVALIDATE_TIMEOUT_MS): Promise<RevalidateResult> {
   if (!url) throw new Error("url required");
+  const base = baseUrl.trim().replace(/\/+$/, "");
+  if (!base) throw new Error("revalidate base URL not configured (set it on /prewarm)");
+  if (!/^https?:\/\//i.test(base)) throw new Error(`invalid revalidate base URL: ${baseUrl}`);
   let path: string;
   try {
     path = new URL(url.trim()).pathname;
   } catch {
     throw new Error(`invalid url: ${url}`);
   }
-  const secret = process.env.REVALIDATE_SECRET;
-  if (!secret) throw new Error("REVALIDATE_SECRET missing");
+  const secret = env("REVALIDATE_SECRET");
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), timeoutMs);
   const started = Date.now();
   try {
-    const res = await fetch(`${revalidateBase()}/api/admin/revalidate-page`, {
+    const res = await fetch(`${base}/api/admin/revalidate-page`, {
       method: "POST",
       signal: ctrl.signal,
       headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
       body: JSON.stringify({ url: path }),
     });
-    const data = await res.json().catch(() => null) as RevalidateResponse;
+    const raw = await res.text().catch(() => "");
+    let data: RevalidateResponse = null;
+    try { data = raw ? JSON.parse(raw) as RevalidateResponse : null; } catch { /* non-JSON body */ }
     const w = data?.warmed?.[0];
     const ok = res.ok && w?.warmed === true;
-    // Explain *why* it failed: the API can answer 200 while the cold render
-    // itself failed (warmed=false + optional error/status).
+    // Explain *why* it failed (the API can answer 200 while the cold render
+    // failed) and keep the entire response body for investigation.
     let reason: string | undefined;
     if (!ok) {
+      const body = raw.trim() || "(empty body)";
       const missing = data?.store?.missing?.includes(path) === true;
-      if (!res.ok) reason = `revalidate api http ${res.status}`;
-      else if (data?.invalid?.includes(path)) reason = "invalid path";
-      else if (!w) reason = "not warmed: no warmed entry in response";
-      else if (w.error) reason = `not warmed: ${w.error}${missing ? " (not in store)" : ""}`;
-      else if (w.status != null) reason = `not warmed: http ${w.status}${missing ? " (not in store)" : ""}`;
-      else reason = "not warmed: no status in response";
+      if (!res.ok) reason = `revalidate api http ${res.status}: ${body}`;
+      else if (data?.invalid?.includes(path)) reason = `invalid path: ${body}`;
+      else if (!w) reason = `not warmed: no warmed entry in response: ${body}`;
+      else if (w.error) reason = `not warmed: ${w.error}${missing ? " (not in store)" : ""} · response: ${body}`;
+      else if (w.status != null) reason = `not warmed: http ${w.status}${missing ? " (not in store)" : ""} · response: ${body}`;
+      else reason = `not warmed: no status in response: ${body}`;
     }
     return { ok, code: w?.status ?? res.status, durationMs: Date.now() - started, reason };
   } catch (e) {

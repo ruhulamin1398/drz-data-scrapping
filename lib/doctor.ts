@@ -3,6 +3,7 @@
 // so chamber blocks are stored as structured text in extraInformation until backend adds it.
 import { fetchSource } from "./scrape";
 import { formatExamples } from "./doctor-examples";
+import { env } from "./env";
 
 export type DoctorDegree = { title: string; subject?: string; institution?: string; country?: string };
 export type DoctorChamber = {
@@ -100,8 +101,8 @@ export async function fetchDoctorPhoto(url: string): Promise<string> {
 // name, designation and workingIn are REQUIRED — empty/malformed values throw.
 // cardText is the specialty-page card entry; it sometimes holds the BMDC Reg. No.
 export async function extractDoctor(md: string, deptSlug: string, deptName: string, cardText?: string): Promise<ExtractedDoctor> {
-  const nexUrl = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/v1/chat/completions";
-  const model = process.env.NEX_MODEL || "gemini";
+  const nexUrl = env("NEX_ROUTER_URL");
+  const model = env("NEX_MODEL");
   if (!md) throw new Error("profile content required");
   // Full prompt: rules + schema + two worked examples (~6k tokens — fine for 250k ctx).
   // Lean prompt: same rules, no examples. Used as fallback when the model echoes
@@ -286,9 +287,8 @@ export function chamberText(chambers: DoctorChamber[]): string {
 // Step 3: POST doctor, then POST each degree with doctorId, then POST each chamber
 // with doctorId + facilityId (matched) or facilityName (free text). Update in place when drxId given.
 export async function pushDoctor(d: DrxDoctor): Promise<{ drxId: string; updated?: boolean; degrees: number; chambers: number }> {
-  const base = (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
-  const token = process.env.DRX_ADMIN_TOKEN || "";
-  if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
+  const base = env("DRX_API_BASE").replace(/\/$/, "");
+  const token = env("DRX_ADMIN_TOKEN");
   if (!d.name || !d.departmentIds.length) throw new Error("name + departmentIds required");
   const extra = [d.extraInformation, chamberText(d.chambers), `Source: ${d.sourceUrl}`].filter(Boolean).join("\n");
   const payload = {
@@ -530,9 +530,8 @@ function canonical(
 export async function resolveDepartmentIds(
   specialityArea: string, designation: string
 ): Promise<{ slug: string; ids: string[] }> {
-  const base = (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
-  const token = process.env.DRX_ADMIN_TOKEN || "";
-  if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
+  const base = env("DRX_API_BASE").replace(/\/$/, "");
+  const token = env("DRX_ADMIN_TOKEN");
   const res = await fetch(`${base}/api/v1/departments?limit=100`, {
     headers: { Authorization: `Bearer ${token}` },
   });
@@ -591,8 +590,8 @@ async function resolveViaAI(
   items: { id: string; slug: string; name: string }[]
 ): Promise<{ slug: string; ids: string[] } | null> {
   try {
-    const nexUrl = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/v1/chat/completions";
-    const model = process.env.NEX_MODEL || "gemini";
+    const nexUrl = env("NEX_ROUTER_URL");
+    const model = env("NEX_MODEL");
     const list = items.map((d) => `${d.slug} — ${d.name}`).join("\n");
     const prompt = `You map a doctor's speciality to department slugs. Reply with ONLY one JSON object, no fences, no commentary.\nDoctor speciality: "${specialityArea}"\nJob title: "${designation}"\nDepartments (slug — name):\n${list}\nPick the 1-2 slugs that best fit (2 only if the speciality genuinely spans two, e.g. "Cardiology and Medicine"). If none fit, use [].\nOutput shape: {"slugs": ["..."]}`;
     const res = await fetch(nexUrl, {

@@ -9,7 +9,7 @@ export const maxDuration = 60;
 // are dispatched in the background so this response stays fast.
 // Response includes the tick result + full pipeline stats snapshot.
 export async function POST(req: NextRequest) {
-  const secret = process.env.CRON_SECRET || "";
+  const secret = process.env.CRON_SECRET;
   const given = req.headers.get("x-cron-secret") || req.nextUrl.searchParams.get("secret") || "";
   if (!secret || given !== secret) return NextResponse.json({ error: "unauthorized" }, { status: 401 });
 

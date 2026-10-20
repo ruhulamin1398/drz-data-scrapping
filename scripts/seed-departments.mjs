@@ -8,8 +8,9 @@ for (const line of fs.readFileSync(".env.local", "utf8").split("\n")) {
   if (i > 0 && !line.trimStart().startsWith("#")) process.env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
 }
 
-const base = (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
-const token = process.env.DRX_ADMIN_TOKEN || "";
+const base = process.env.DRX_API_BASE?.replace(/\/$/, "");
+const token = process.env.DRX_ADMIN_TOKEN;
+if (!base) throw new Error("DRX_API_BASE missing in .env.local");
 if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
 const h = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 

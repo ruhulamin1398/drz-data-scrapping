@@ -104,6 +104,7 @@ async function getSettings(pool: Pool) {
     enabled: boolean; facilities_enabled: boolean; doctors_enabled: boolean; prewarm_enabled: boolean; doctor_updates_enabled: boolean;
     concurrency: number; tasks_per_tick: number;
     facilities_tasks_per_tick: number; doctors_tasks_per_tick: number; prewarm_tasks_per_tick: number; doctor_updates_tasks_per_tick: number;
+    revalidate_base_url: string;
     worker_active: boolean; worker_heartbeat: string | null;
   } | undefined;
 }
@@ -327,9 +328,9 @@ async function claimPrewarm(pool: Pool, n: number): Promise<PrewarmRow[]> {
 
 // Server-side pre-warm: one revalidate call marks the page stale, cold-renders
 // it and stamps the sitemap store. warmed=true (<400 render) = success.
-async function processPrewarmItem(pool: Pool, q: PrewarmRow): Promise<boolean> {
+async function processPrewarmItem(pool: Pool, q: PrewarmRow, revalidateBase: string): Promise<boolean> {
   try {
-    const v = await revalidateUrl(q.source_url);
+    const v = await revalidateUrl(q.source_url, revalidateBase);
     await pool.query(
       `UPDATE prewarm_queue SET status=$2, http_code=$3, duration_ms=$4, fail_reason=$5, updated_at=now() WHERE source_url=$1`,
       [q.source_url, v.ok ? "success" : "failed", v.code, v.durationMs, v.ok ? null : (v.reason ?? `http ${v.code}`)]
@@ -339,7 +340,7 @@ async function processPrewarmItem(pool: Pool, q: PrewarmRow): Promise<boolean> {
     const msg = err instanceof Error ? err.message : String(err);
     await pool.query(
       `UPDATE prewarm_queue SET status='failed', fail_reason=$2, updated_at=now() WHERE source_url=$1`,
-      [q.source_url, msg.slice(0, 300)]
+      [q.source_url, msg]
     ).catch(() => {});
     return false;
   }
@@ -470,7 +471,7 @@ async function workerLoop(concurrency: number): Promise<{ succeeded: number; fai
       const results = await Promise.all([
         ...rows.map((q) => processSingleItem(pool, q)),
         ...drows.map((q) => processDoctorItem(pool, q)),
-        ...prows.map((q) => processPrewarmItem(pool, q)),
+        ...prows.map((q) => processPrewarmItem(pool, q, s.revalidate_base_url)),
         ...urows.map((q) => processUpdateRun(pool, q)),
       ]);
       const ok = results.filter(Boolean).length;

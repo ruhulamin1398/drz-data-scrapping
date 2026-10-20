@@ -21,6 +21,9 @@ export default function Prewarm() {
   const [done, setDone] = useState(0);
   const [active, setActive] = useState<string[]>([]);
   const [settings, setSettings] = useState({ enabled: false, prewarm_enabled: true, prewarm_tasks_per_tick: 10 });
+  const [baseUrl, setBaseUrl] = useState("");
+  const [savingBase, setSavingBase] = useState(false);
+  const baseInit = useRef(false);
   const [sitemap, setSitemap] = useState("");
   const [loading, setLoading] = useState(false);
   const [openRow, setOpenRow] = useState<number | null>(null);
@@ -48,12 +51,37 @@ export default function Prewarm() {
     try {
       const r = await fetch("/api/settings");
       const j = await r.json();
-      if (!j.error) setSettings({
-        enabled: !!j.enabled,
-        prewarm_enabled: j.prewarm_enabled !== false,
-        prewarm_tasks_per_tick: j.prewarm_tasks_per_tick ?? 10,
-      });
+      if (!j.error) {
+        setSettings({
+          enabled: !!j.enabled,
+          prewarm_enabled: j.prewarm_enabled !== false,
+          prewarm_tasks_per_tick: j.prewarm_tasks_per_tick ?? 10,
+        });
+        // Initialize the editable field once; 10s refreshes must not clobber typing.
+        if (!baseInit.current) {
+          setBaseUrl(j.revalidate_base_url ?? "");
+          baseInit.current = true;
+        }
+      }
     } catch { /* ignore */ }
+  }
+
+  async function saveBaseUrl() {
+    if (savingBase) return;
+    setSavingBase(true);
+    try {
+      const r = await fetch("/api/settings", {
+        method: "PATCH", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ revalidate_base_url: baseUrl.trim() }),
+      });
+      const j = await r.json();
+      if (!r.ok || j.error) throw new Error(j.error || `save ${r.status}`);
+      setBaseUrl(j.revalidate_base_url ?? "");
+      setLast("revalidate base URL saved");
+    } catch (e) {
+      setLast(`error: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    setSavingBase(false);
   }
 
   async function setPrewarm(on: boolean) {
@@ -264,6 +292,21 @@ export default function Prewarm() {
             {loading ? "Loading…" : "Load"}
           </button>
         </div>
+        <label className="mt-3 block text-xs font-medium uppercase tracking-wide text-text-secondary">Revalidate base URL</label>
+        <div className="mt-1.5 flex gap-2">
+          <input
+            value={baseUrl}
+            onChange={(e) => setBaseUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") saveBaseUrl(); }}
+            placeholder="https://www.doctorzonebd.com"
+            className="flex-1 rounded-xl border border-border bg-surface-alt px-3 py-2.5 font-mono text-xs text-text-primary outline-none focus:border-primary"
+          />
+          <button onClick={saveBaseUrl} disabled={savingBase}
+            className="rounded-xl bg-primary px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-primary-dark disabled:opacity-40">
+            {savingBase ? "Saving…" : "Save"}
+          </button>
+        </div>
+        <p className="mt-1 text-[11px] text-text-muted">Used by the cron worker and Retry — stored in settings, no env var.</p>
         <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
           <button onClick={() => load()} className="rounded-lg border border-border px-2.5 py-1 text-text-secondary hover:border-primary">Refresh</button>
           <button onClick={retryFailed} disabled={busyRetry || counts.failed === 0}

@@ -2,7 +2,15 @@
 // Drives the deployed step endpoints (fetch -> extract -> drx -> queue PATCH) from
 // local machine — no serverless timeout, browser need not stay open.
 // Stops early on Jina quota/rate-limit errors; per-item failures are marked failed.
-const PROD = process.env.PROD_BASE || "https://drz-data-scrapping.vercel.app";
+import fs from "fs";
+
+for (const line of fs.readFileSync(".env.local", "utf8").split("\n")) {
+  const i = line.indexOf("=");
+  if (i > 0 && !line.trimStart().startsWith("#")) process.env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
+}
+
+const PROD = process.env.PROD_BASE;
+if (!PROD) throw new Error("PROD_BASE missing in .env.local");
 const MAX = Number(process.argv[2] ?? 25);
 const WORKERS = Number(process.argv[3] ?? 3);
 

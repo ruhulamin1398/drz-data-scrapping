@@ -9,9 +9,9 @@ for (const line of fs.readFileSync(".env.local", "utf8").split("\n")) {
   if (i > 0 && !line.trimStart().startsWith("#")) process.env[line.slice(0, i).trim()] = line.slice(i + 1).trim();
 }
 
-const base = (process.env.DRX_API_BASE || "").replace(/\/$/, "");
-const token = process.env.DRX_ADMIN_TOKEN || "";
-if (!base || !token) throw new Error("DRX_API_BASE / DRX_ADMIN_TOKEN required");
+const base = process.env.DRX_API_BASE?.replace(/\/$/, "");
+const token = process.env.DRX_ADMIN_TOKEN;
+if (!base || !token) throw new Error("DRX_API_BASE / DRX_ADMIN_TOKEN missing in .env.local");
 
 // Single Jina key from /settings (settings.jina_keys, first line), env fallback.
 const keyClient = new Client({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false } });
@@ -22,7 +22,7 @@ try {
   jinaKey = String(r.rows[0]?.jina_keys ?? "").split("\n").map((s) => s.trim()).find((s) => s.length > 10) || "";
 } catch { /* pre-migration: env only */ }
 await keyClient.end().catch(() => {});
-if (!jinaKey) jinaKey = (process.env.JINA_API_KEY || "").trim();
+if (!jinaKey && process.env.JINA_API_KEY) jinaKey = process.env.JINA_API_KEY.trim();
 if (!jinaKey) throw new Error("no Jina key: add one on /settings or set JINA_API_KEY");
 
 async function jinaGet(url) {

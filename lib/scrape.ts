@@ -1,5 +1,6 @@
 import { locationBlock } from "./locations";
 import { jinaFetch } from "./jina";
+import { env } from "./env";
 
 const TRIM_LINES = 30;
 
@@ -15,8 +16,8 @@ export async function fetchSource(url: string, full: boolean): Promise<{ totalLi
 
 // Step 2: extract the 6-line facility record via nex-router (gemini, fixed prompt).
 export async function extractInfo(trimmed: string, divisionId: number): Promise<string> {
-  const nexUrl = process.env.NEX_ROUTER_URL || "https://nex-router.onrender.com/api/v1/chat/completions";
-  const model = process.env.NEX_MODEL || "gemini";
+  const nexUrl = env("NEX_ROUTER_URL");
+  const model = env("NEX_MODEL");
   if (!trimmed) throw new Error("trimmed content required");
   const prompt =
     `You extract facility information. Output ONLY the result, no reasoning, no explanation.
@@ -58,9 +59,8 @@ function slugify(s: string): string {
 
 // Step 3: create on drx-backend, or PATCH in place when drxId is given (no duplicates).
 export async function pushDrx(f: DrxFacility): Promise<{ drxId: number; updated?: boolean }> {
-  const base = (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
-  const token = process.env.DRX_ADMIN_TOKEN || "";
-  if (!token) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
+  const base = env("DRX_API_BASE").replace(/\/$/, "");
+  const token = env("DRX_ADMIN_TOKEN");
   if (!f.name || !f.divisionId || !f.districtId || !f.typeId) throw new Error("name, divisionId, districtId, typeId required");
   const slug = `${slugify(f.name)}-${f.districtId}`;
   const payload = {

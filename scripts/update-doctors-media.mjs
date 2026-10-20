@@ -16,9 +16,10 @@ for (const line of fs.readFileSync(".env.local", "utf8").split("\n")) {
 }
 
 const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 30 });
-const BASE = (process.env.DRX_API_BASE || "https://api.doctorzonebd.com").replace(/\/$/, "");
-const TOKEN = process.env.DRX_ADMIN_TOKEN || "";
-if (!TOKEN) throw new Error("DRX_ADMIN_TOKEN required");
+const BASE = process.env.DRX_API_BASE?.replace(/\/$/, "");
+const TOKEN = process.env.DRX_ADMIN_TOKEN;
+if (!BASE) throw new Error("DRX_API_BASE missing in .env.local");
+if (!TOKEN) throw new Error("DRX_ADMIN_TOKEN missing in .env.local");
 
 const DONE_FILE = "/tmp/media-update-done.json";
 const done = new Set(fs.existsSync(DONE_FILE) ? JSON.parse(fs.readFileSync(DONE_FILE, "utf8")) : []);

@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { env } from "@/lib/env";
 
 // Same data source pagespeed.web.dev uses: PSI v5 (Lighthouse lab + CrUX field).
 // Google PSI can take up to ~3 min under load. On self-hosted/VPS Next.js
@@ -59,9 +60,8 @@ export async function GET(req: NextRequest) {
     }
 
     const key = process.env.PAGESPEED_API_KEY?.trim();
-    // Overridable for local testing (e.g. serve a canned PSI JSON file).
-    const base =
-      process.env.PAGESPEED_API_URL || "https://www.googleapis.com/pagespeedonline/v5/runPagespeed";
+    // PSI endpoint from env (can point at a local mock for testing).
+    const base = env("PAGESPEED_API_URL");
     const psi =
       `${base}` +
       `?url=${encodeURIComponent(u.toString())}&strategy=${strategy}&category=performance` +

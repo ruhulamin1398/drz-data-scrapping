@@ -9,7 +9,7 @@ export const maxDuration = 60;
 // Useful when the database is only reachable from the deployed app.
 // Header x-cron-secret (or ?secret=) must match CRON_SECRET.
 export async function POST(req: NextRequest) {
-  const secret = process.env.CRON_SECRET || "";
+  const secret = process.env.CRON_SECRET;
   const given = req.headers.get("x-cron-secret") || req.nextUrl.searchParams.get("secret") || "";
   if (!secret || given !== secret) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });

@@ -17,9 +17,9 @@ const hub = process.argv[3];
 if (!city || !hub) throw new Error("usage: node scripts/harvest-doctors-city.mjs <city> <hub-slug>");
 const cityName = city.charAt(0).toUpperCase() + city.slice(1);
 
-const base = (process.env.DRX_API_BASE || "").replace(/\/$/, "");
-const token = process.env.DRX_ADMIN_TOKEN || "";
-if (!base || !token) throw new Error("DRX_API_BASE / DRX_ADMIN_TOKEN required");
+const base = process.env.DRX_API_BASE?.replace(/\/$/, "");
+const token = process.env.DRX_ADMIN_TOKEN;
+if (!base || !token) throw new Error("DRX_API_BASE / DRX_ADMIN_TOKEN missing in .env.local");
 const H = { "Content-Type": "application/json", Authorization: `Bearer ${token}` };
 
 // Single Jina key from /settings (settings.jina_keys, first line), env fallback.
@@ -31,7 +31,7 @@ try {
   jinaKey = String(r.rows[0]?.jina_keys ?? "").split("\n").map((s) => s.trim()).find((s) => s.length > 10) || "";
 } catch { /* pre-migration: env only */ }
 await keyClient.end().catch(() => {});
-if (!jinaKey) jinaKey = (process.env.JINA_API_KEY || "").trim();
+if (!jinaKey && process.env.JINA_API_KEY) jinaKey = process.env.JINA_API_KEY.trim();
 if (!jinaKey) throw new Error("no Jina key: add one on /settings or set JINA_API_KEY");
 
 async function jina(url) {

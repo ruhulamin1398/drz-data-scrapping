@@ -4,12 +4,13 @@ import { db } from "@/lib/db";
 // GET /api/settings — processor config + heartbeat + jina key inventory (masked)
 export async function GET() {
   try {
-    const r = await db().query("SELECT enabled, facilities_enabled, doctors_enabled, prewarm_enabled, doctor_updates_enabled, concurrency, tasks_per_tick, facilities_tasks_per_tick, doctors_tasks_per_tick, prewarm_tasks_per_tick, doctor_updates_tasks_per_tick, heartbeat_at, jina_keys FROM settings WHERE id=1");
+    const r = await db().query("SELECT enabled, facilities_enabled, doctors_enabled, prewarm_enabled, doctor_updates_enabled, concurrency, tasks_per_tick, facilities_tasks_per_tick, doctors_tasks_per_tick, prewarm_tasks_per_tick, doctor_updates_tasks_per_tick, revalidate_base_url, heartbeat_at, jina_keys FROM settings WHERE id=1");
     const row = r.rows[0] ?? {};
     const keys = String(row.jina_keys ?? "").split("\n").map((s: string) => s.trim()).filter(Boolean);
     const { jina_keys: _omit, ...rest } = row;
     return NextResponse.json({
       ...rest, enabled: !!rest.enabled,
+      revalidate_base_url: String(rest.revalidate_base_url ?? ""),
       facilities_enabled: rest.facilities_enabled !== false,
       doctors_enabled: rest.doctors_enabled !== false,
       prewarm_enabled: rest.prewarm_enabled !== false,
@@ -29,7 +30,7 @@ export async function GET() {
   }
 }
 
-// PATCH /api/settings { enabled?, facilities_enabled?, doctors_enabled?, prewarm_enabled?, doctor_updates_enabled?, concurrency 1-100?, tasks_per_tick 1+?, facilities_tasks_per_tick 1+?, doctors_tasks_per_tick 1+?, prewarm_tasks_per_tick 1+?, doctor_updates_tasks_per_tick 1+?, jina_keys? (multiline, one per line, replaces all) }
+// PATCH /api/settings { enabled?, facilities_enabled?, doctors_enabled?, prewarm_enabled?, doctor_updates_enabled?, concurrency 1-100?, tasks_per_tick 1+?, facilities_tasks_per_tick 1+?, doctors_tasks_per_tick 1+?, prewarm_tasks_per_tick 1+?, doctor_updates_tasks_per_tick 1+?, revalidate_base_url? (http(s) URL or empty), jina_keys? (multiline, one per line, replaces all) }
 export async function PATCH(req: NextRequest) {
   try {
     const b = await req.json();
@@ -61,6 +62,13 @@ export async function PATCH(req: NextRequest) {
       const t = Math.max(1, Math.floor(Number(b.tasks_per_tick)) || 1);
       vals.push(t); sets.push(`tasks_per_tick=$${vals.length}`);
     }
+    if (typeof b.revalidate_base_url === "string") {
+      const v = b.revalidate_base_url.trim().replace(/\/+$/, "");
+      if (v && !/^https?:\/\//i.test(v)) {
+        return NextResponse.json({ error: "revalidate_base_url must be an http(s) URL" }, { status: 400 });
+      }
+      vals.push(v); sets.push(`revalidate_base_url=$${vals.length}`);
+    }
     if (typeof b.jina_keys === "string") {
       const cleaned = b.jina_keys.split("\n").map((s: string) => s.trim()).filter(Boolean).join("\n");
       vals.push(cleaned); sets.push(`jina_keys=$${vals.length}`);
@@ -70,12 +78,13 @@ export async function PATCH(req: NextRequest) {
     await db().query(
       `UPDATE settings SET ${sets.join(", ")}, updated_at=now() WHERE id=1`
     , vals);
-    const r = await db().query("SELECT enabled, facilities_enabled, doctors_enabled, prewarm_enabled, doctor_updates_enabled, concurrency, tasks_per_tick, facilities_tasks_per_tick, doctors_tasks_per_tick, prewarm_tasks_per_tick, doctor_updates_tasks_per_tick, heartbeat_at, jina_keys FROM settings WHERE id=1");
+    const r = await db().query("SELECT enabled, facilities_enabled, doctors_enabled, prewarm_enabled, doctor_updates_enabled, concurrency, tasks_per_tick, facilities_tasks_per_tick, doctors_tasks_per_tick, prewarm_tasks_per_tick, doctor_updates_tasks_per_tick, revalidate_base_url, heartbeat_at, jina_keys FROM settings WHERE id=1");
     const row = r.rows[0] ?? {};
     const keys = String(row.jina_keys ?? "").split("\n").map((s: string) => s.trim()).filter(Boolean);
     const { jina_keys: _omit, ...rest } = row;
     return NextResponse.json({
       ...rest, enabled: !!rest.enabled,
+      revalidate_base_url: String(rest.revalidate_base_url ?? ""),
       facilities_enabled: rest.facilities_enabled !== false,
       doctors_enabled: rest.doctors_enabled !== false,
       prewarm_enabled: rest.prewarm_enabled !== false,

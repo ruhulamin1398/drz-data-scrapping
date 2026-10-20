@@ -7,3 +7,10 @@ This version has breaking changes — APIs, conventions, and file structure may 
 This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
 
 <!-- END:nextjs-agent-rules -->
+
+## Hard rule: no local runs
+
+Never run the project locally — no dev server, no local build, no local test/type-check
+commands. Vercel is the only execution environment: make changes, deploy with
+`vercel deploy` (cloud build), promote with `vercel --prod`, then verify against the
+live URL. This rule is permanent for this repository.
