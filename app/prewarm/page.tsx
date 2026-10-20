@@ -7,6 +7,7 @@ type PRow = {
   id: number; source_url: string;
   status: "pending" | "processing" | "success" | "failed";
   http_code: number | null; duration_ms: number | null; fail_reason: string | null;
+  locked_at: string | null; created_at: string | null; updated_at: string | null;
 };
 
 export default function Prewarm() {
@@ -22,6 +23,8 @@ export default function Prewarm() {
   const [settings, setSettings] = useState({ enabled: false, prewarm_enabled: true, prewarm_tasks_per_tick: 10 });
   const [sitemap, setSitemap] = useState("");
   const [loading, setLoading] = useState(false);
+  const [openRow, setOpenRow] = useState<number | null>(null);
+  const [copied, setCopied] = useState<number | null>(null);
   const stopRef = useRef(false);
   const busyRetry = busy || active.length > 0;
   const queueRunning = settings.enabled && settings.prewarm_enabled;
@@ -146,6 +149,15 @@ export default function Prewarm() {
     } finally {
       setActive((a) => a.filter((u) => u !== q.source_url));
     }
+  }
+
+  // Copy the full failed row (every DB column) for offline investigation.
+  async function copyRow(q: PRow) {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(q, null, 2));
+      setCopied(q.id);
+      setTimeout(() => setCopied((v) => (v === q.id ? null : v)), 1500);
+    } catch { /* clipboard unavailable */ }
   }
 
   // Bulk browser retry of failed rows (claimed synchronously so cron can't steal them).
@@ -301,7 +313,16 @@ export default function Prewarm() {
                   {q.http_code}{q.duration_ms != null ? ` · ${(q.duration_ms / 1000).toFixed(1)}s` : ""}
                 </span>
               )}
-              <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>
+              {q.status === "failed" ? (
+                <button onClick={() => setOpenRow((v) => (v === q.id ? null : q.id))}
+                  aria-expanded={openRow === q.id}
+                  title="Click to show the full failed row data"
+                  className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]} cursor-pointer hover:ring-2 hover:ring-danger/40`}>
+                  {q.status} {openRow === q.id ? "▴" : "▾"}
+                </button>
+              ) : (
+                <span className={`rounded-full px-2.5 py-1 text-[11px] font-semibold ${pill[q.status]}`}>{q.status}</span>
+              )}
               {(q.status === "failed" || q.status === "success") && (
                 <button onClick={() => retryOne(q.source_url)} disabled={busy || active.includes(q.source_url)}
                   className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-xs font-medium text-text-secondary hover:border-primary disabled:opacity-40">
@@ -311,6 +332,35 @@ export default function Prewarm() {
             </div>
             {q.status === "failed" && q.fail_reason && (
               <p className="mt-1 font-mono text-[11px] text-danger">{q.fail_reason}</p>
+            )}
+            {openRow === q.id && q.status === "failed" && (
+              <div className="mt-2 rounded-lg border border-danger/30 bg-surface-alt p-3">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-wide text-text-secondary">Failed row data</p>
+                  <button onClick={() => copyRow(q)}
+                    className="rounded-lg border border-border px-2 py-0.5 text-[11px] text-text-secondary hover:border-primary hover:text-text-primary">
+                    {copied === q.id ? "Copied ✓" : "Copy JSON"}
+                  </button>
+                </div>
+                <dl className="mt-2 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 font-mono text-[11px] leading-5">
+                  {([
+                    ["id", q.id],
+                    ["status", q.status],
+                    ["source_url", q.source_url],
+                    ["http_code", q.http_code ?? "—"],
+                    ["duration_ms", q.duration_ms ?? "—"],
+                    ["fail_reason", q.fail_reason ?? "—"],
+                    ["locked_at", q.locked_at ?? "—"],
+                    ["created_at", q.created_at ?? "—"],
+                    ["updated_at", q.updated_at ?? "—"],
+                  ] as const).map(([k, v]) => (
+                    <div key={k} className="contents">
+                      <dt className="text-text-secondary">{k}</dt>
+                      <dd className="break-all text-text-primary">{String(v)}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
             )}
           </div>
         ))}
