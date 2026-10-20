@@ -18,7 +18,6 @@ export const REQUIRED_ENV = [
   "NEX_ROUTER_URL",
   "NEX_SEARCH_URL",
   "NEX_MODEL",
-  "PAGESPEED_API_URL",
   "REVALIDATE_SECRET",
 ] as const;
 
