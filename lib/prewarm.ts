@@ -8,6 +8,13 @@ export const REVALIDATE_TIMEOUT_MS = 30000;
 
 export type RevalidateResult = { ok: boolean; code: number; durationMs: number; reason?: string };
 
+type RevalidateResponse = {
+  revalidated?: boolean;
+  invalid?: string[];
+  store?: { validated?: number; missing?: string[]; error?: string };
+  warmed?: { path?: string; warmed?: boolean; status?: number; error?: string }[];
+} | null;
+
 const revalidateBase = () =>
   (process.env.REVALIDATE_BASE_URL || "https://www.doctorzonebd.com").replace(/\/+$/, "");
 
@@ -35,11 +42,22 @@ export async function revalidateUrl(url: string, timeoutMs = REVALIDATE_TIMEOUT_
       headers: { authorization: `Bearer ${secret}`, "content-type": "application/json" },
       body: JSON.stringify({ url: path }),
     });
-    const data = await res.json().catch(() => null) as { warmed?: { warmed?: boolean; status?: number }[] } | null;
+    const data = await res.json().catch(() => null) as RevalidateResponse;
     const w = data?.warmed?.[0];
-    const code = w?.status ?? res.status;
     const ok = res.ok && w?.warmed === true;
-    return { ok, code, durationMs: Date.now() - started, reason: ok ? undefined : `http ${code}` };
+    // Explain *why* it failed: the API can answer 200 while the cold render
+    // itself failed (warmed=false + optional error/status).
+    let reason: string | undefined;
+    if (!ok) {
+      const missing = data?.store?.missing?.includes(path) === true;
+      if (!res.ok) reason = `revalidate api http ${res.status}`;
+      else if (data?.invalid?.includes(path)) reason = "invalid path";
+      else if (!w) reason = "not warmed: no warmed entry in response";
+      else if (w.error) reason = `not warmed: ${w.error}${missing ? " (not in store)" : ""}`;
+      else if (w.status != null) reason = `not warmed: http ${w.status}${missing ? " (not in store)" : ""}`;
+      else reason = "not warmed: no status in response";
+    }
+    return { ok, code: w?.status ?? res.status, durationMs: Date.now() - started, reason };
   } catch (e) {
     if ((e as Error)?.name === "AbortError") throw new Error(`revalidate timeout after ${timeoutMs}ms`);
     throw e;
