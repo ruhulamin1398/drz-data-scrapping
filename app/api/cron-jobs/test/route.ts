@@ -28,13 +28,21 @@ export async function POST(req: NextRequest) {
       }
     }
 
+    let jobRow: CronJobRow | null = null;
+    if (jobId !== null) {
+      const r = await db().query(`SELECT * FROM cron_jobs WHERE id=$1`, [jobId]);
+      if (!r.rows.length) return NextResponse.json({ error: "job not found" }, { status: 404 });
+      jobRow = r.rows[0] as CronJobRow;
+      if (jobRow.deleted_at) {
+        return NextResponse.json({ error: "job is in trash — restore it first" }, { status: 409 });
+      }
+    }
+
     let configInput: Record<string, unknown> | null = null;
     if (body.config && typeof body.config === "object") {
       configInput = body.config as Record<string, unknown>;
-    } else if (jobId !== null) {
-      const r = await db().query(`SELECT * FROM cron_jobs WHERE id=$1`, [jobId]);
-      if (!r.rows.length) return NextResponse.json({ error: "job not found" }, { status: 404 });
-      configInput = r.rows[0] as CronJobRow;
+    } else if (jobRow) {
+      configInput = jobRow;
     }
     if (!configInput) {
       return NextResponse.json({ error: "config or jobId required" }, { status: 400 });

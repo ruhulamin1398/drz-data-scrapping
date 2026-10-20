@@ -17,6 +17,7 @@ export const CRON_JOBS_DDL: string[] = [
     body TEXT,
     timeout_ms INT NOT NULL DEFAULT 10000 CHECK (timeout_ms BETWEEN 1000 AND 30000),
     enabled BOOL NOT NULL DEFAULT true,
+    deleted_at TIMESTAMPTZ,
     next_run_at TIMESTAMPTZ,
     last_run_at TIMESTAMPTZ,
     last_status TEXT CHECK (last_status IN ('success','failed')),
@@ -26,6 +27,7 @@ export const CRON_JOBS_DDL: string[] = [
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
   )`,
+  `ALTER TABLE cron_jobs ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMPTZ`,
   `CREATE TABLE IF NOT EXISTS cron_job_runs (
     id BIGSERIAL PRIMARY KEY,
     job_id BIGINT NOT NULL REFERENCES cron_jobs(id) ON DELETE CASCADE,

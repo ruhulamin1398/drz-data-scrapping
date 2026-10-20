@@ -31,6 +31,7 @@ export type CronJob = {
   last_http_status: number | null;
   last_duration_ms: number | null;
   consecutive_failures: number;
+  deleted_at: string | null;
   created_at: string;
   updated_at: string;
   next_runs: string[];
@@ -96,4 +97,5 @@ export type CronJobCounts = {
   active: number;
   paused: number;
   failing: number;
+  deleted: number;
 };

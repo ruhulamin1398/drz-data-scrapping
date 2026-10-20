@@ -33,10 +33,11 @@ export const DISPATCH_LIMIT = 10;
 const HEADER_NAME = /^[A-Za-z0-9!#$%&'*+\-.^_`|~]+$/;
 
 // pg returns timestamptz columns as Date objects; JSON APIs need ISO strings.
-export type CronJobRow = Omit<CronJob, "headers" | "next_runs" | "next_run_at" | "last_run_at" | "created_at" | "updated_at"> & {
+export type CronJobRow = Omit<CronJob, "headers" | "next_runs" | "next_run_at" | "last_run_at" | "deleted_at" | "created_at" | "updated_at"> & {
   headers: CronJobHeader[] | null;
   next_run_at: Date | string | null;
   last_run_at: Date | string | null;
+  deleted_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
 };
@@ -88,6 +89,7 @@ export function serializeJob(row: CronJobRow): CronJob {
     last_http_status: row.last_http_status ?? null,
     last_duration_ms: row.last_duration_ms ?? null,
     consecutive_failures: Number(row.consecutive_failures) || 0,
+    deleted_at: iso(row.deleted_at),
     created_at: iso(row.created_at) ?? new Date().toISOString(),
     updated_at: iso(row.updated_at) ?? new Date().toISOString(),
     next_runs: safeNextRuns(row.cron_expression, row.timezone || DEFAULT_TIMEZONE),
@@ -416,7 +418,7 @@ export async function dispatchDueJobs(): Promise<{ due: number; succeeded: numbe
     await client.query("BEGIN");
     const due = await client.query(
       `SELECT * FROM cron_jobs
-       WHERE enabled AND next_run_at IS NOT NULL AND next_run_at <= now()
+       WHERE enabled AND deleted_at IS NULL AND next_run_at IS NOT NULL AND next_run_at <= now()
        ORDER BY next_run_at ASC LIMIT $1 FOR UPDATE SKIP LOCKED`,
       [limit]
     );

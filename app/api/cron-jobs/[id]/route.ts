@@ -50,6 +50,9 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
     const pool = db();
     const cur = await pool.query(`SELECT * FROM cron_jobs WHERE id=$1`, [id]);
     if (!cur.rows.length) return NextResponse.json({ error: "job not found" }, { status: 404 });
+    if (cur.rows[0]?.deleted_at) {
+      return NextResponse.json({ error: "job is in trash — restore it first" }, { status: 409 });
+    }
     const body = (await req.json().catch(() => null)) as Record<string, unknown> | null;
     if (!body || typeof body !== "object") {
       return NextResponse.json({ error: "JSON body required" }, { status: 400 });
@@ -104,14 +107,33 @@ export async function PATCH(req: NextRequest, ctx: { params: Promise<{ id: strin
   }
 }
 
-// DELETE /api/cron-jobs/:id — cascades run history.
-export async function DELETE(_req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
+// DELETE /api/cron-jobs/:id — soft delete (trash) by default. ?permanent=1
+// removes the row and cascades its run history.
+export async function DELETE(req: NextRequest, ctx: { params: Promise<{ id: string }> }) {
   const id = await parseId(ctx);
   if (id === null) return NextResponse.json({ error: "invalid id" }, { status: 400 });
+  const permanent =
+    req.nextUrl.searchParams.get("permanent") === "1" || req.nextUrl.searchParams.get("permanent") === "true";
   try {
-    const r = await db().query(`DELETE FROM cron_jobs WHERE id=$1 RETURNING id`, [id]);
-    if (!r.rows.length) return NextResponse.json({ error: "job not found" }, { status: 404 });
-    return NextResponse.json({ ok: true, id });
+    const pool = db();
+    if (permanent) {
+      const r = await pool.query(`DELETE FROM cron_jobs WHERE id=$1 RETURNING id`, [id]);
+      if (!r.rows.length) return NextResponse.json({ error: "job not found" }, { status: 404 });
+      return NextResponse.json({ ok: true, id, permanent: true });
+    }
+    const r = await pool.query(
+      `UPDATE cron_jobs
+       SET deleted_at=now(), enabled=false, next_run_at=null, updated_at=now()
+       WHERE id=$1 AND deleted_at IS NULL
+       RETURNING id`,
+      [id]
+    );
+    if (!r.rows.length) {
+      const exists = await pool.query(`SELECT id FROM cron_jobs WHERE id=$1`, [id]);
+      if (!exists.rows.length) return NextResponse.json({ error: "job not found" }, { status: 404 });
+      return NextResponse.json({ error: "job is already in trash" }, { status: 409 });
+    }
+    return NextResponse.json({ ok: true, id, trashed: true });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
   }

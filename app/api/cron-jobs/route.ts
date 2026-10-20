@@ -10,7 +10,7 @@ import type { CronJobCounts, TagSuggestion } from "@/lib/cron-types";
 
 export const dynamic = "force-dynamic";
 
-// GET /api/cron-jobs?q=&status=active|paused|failing&tags=a,b&tagMode=any|all&sort=next|title|recent
+// GET /api/cron-jobs?q=&status=active|paused|failing&tags=a,b&tagMode=any|all&sort=next|title|recent|deleted&deleted=1
 export async function GET(req: NextRequest) {
   try {
     const sp = req.nextUrl.searchParams;
@@ -18,6 +18,7 @@ export async function GET(req: NextRequest) {
     const status = sp.get("status") ?? "all";
     const tagMode = sp.get("tagMode") === "all" ? "all" : "any";
     const sort = sp.get("sort") ?? "next";
+    const trashed = sp.get("deleted") === "1" || sp.get("deleted") === "true";
     const tags = (sp.get("tags") ?? "")
       .split(",")
       .map((t) => t.trim().toLowerCase())
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest) {
       .slice(0, 20);
 
     const pool = db();
-    const conds: string[] = [];
+    const conds: string[] = [trashed ? "deleted_at IS NOT NULL" : "deleted_at IS NULL"];
     const vals: unknown[] = [];
     if (q) {
       vals.push(`%${q}%`);
@@ -41,11 +42,13 @@ export async function GET(req: NextRequest) {
     }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
     const order =
-      sort === "title"
-        ? "lower(title) ASC, id DESC"
-        : sort === "recent"
-          ? "last_run_at DESC NULLS LAST, id DESC"
-          : "next_run_at ASC NULLS LAST, id DESC";
+      sort === "deleted"
+        ? "deleted_at DESC NULLS LAST, id DESC"
+        : sort === "title"
+          ? "lower(title) ASC, id DESC"
+          : sort === "recent"
+            ? "last_run_at DESC NULLS LAST, id DESC"
+            : "next_run_at ASC NULLS LAST, id DESC";
 
     const rows = await pool.query(
       `SELECT * FROM cron_jobs ${where} ORDER BY ${order} LIMIT 500`,
@@ -54,10 +57,11 @@ export async function GET(req: NextRequest) {
     const jobs = (rows.rows as CronJobRow[]).map(serializeJob);
 
     const countsRes = await pool.query(
-      `SELECT COUNT(*)::int AS total,
-              COUNT(*) FILTER (WHERE enabled)::int AS active,
-              COUNT(*) FILTER (WHERE NOT enabled)::int AS paused,
-              COUNT(*) FILTER (WHERE last_status = 'failed')::int AS failing
+      `SELECT COUNT(*) FILTER (WHERE deleted_at IS NULL)::int AS total,
+              COUNT(*) FILTER (WHERE deleted_at IS NULL AND enabled)::int AS active,
+              COUNT(*) FILTER (WHERE deleted_at IS NULL AND NOT enabled)::int AS paused,
+              COUNT(*) FILTER (WHERE deleted_at IS NULL AND last_status = 'failed')::int AS failing,
+              COUNT(*) FILTER (WHERE deleted_at IS NOT NULL)::int AS deleted
        FROM cron_jobs`
     );
     const c = countsRes.rows[0] ?? {};
@@ -66,11 +70,12 @@ export async function GET(req: NextRequest) {
       active: Number(c.active) || 0,
       paused: Number(c.paused) || 0,
       failing: Number(c.failing) || 0,
+      deleted: Number(c.deleted) || 0,
     };
 
     const tagRes = await pool.query(
       `SELECT tag, COUNT(*)::int AS count
-       FROM (SELECT unnest(tags) AS tag FROM cron_jobs) t
+       FROM (SELECT unnest(tags) AS tag FROM cron_jobs WHERE deleted_at IS NULL) t
        GROUP BY tag ORDER BY count DESC, tag ASC`
     );
     const tagList: TagSuggestion[] = tagRes.rows.map((r) => ({
