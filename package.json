@@ -13,6 +13,7 @@
     "symptoms": "node scripts/push-symptom-departments.mjs"
   },
   "dependencies": {
+    "croner": "^10.0.1",
     "next": "16.3.4",
     "pg": "^8.23.0",
     "react": "19.2.8",

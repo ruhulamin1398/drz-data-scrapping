@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
 
@@ -116,9 +117,19 @@ export default function SettingsPage() {
 
       {/* cron info */}
       <div className="mt-3 rounded-2xl border border-border bg-surface p-4 text-sm shadow-sm">
-        <p className="font-semibold text-text-primary">Cron endpoint</p>
-        <p className="mt-1 font-mono text-xs text-text-secondary">POST /api/cron — header <span className="text-text-primary">x-cron-secret</span>, every 1 min via cron-job.org</p>
-        <p className="mt-1 text-xs text-text-secondary">Tick history lives under <span className="font-semibold text-text-primary">History</span> in the sidebar.</p>
+        <div className="flex items-start gap-3">
+          <div className="flex-1">
+            <p className="font-semibold text-text-primary">Cron endpoint</p>
+            <p className="mt-1 font-mono text-xs text-text-secondary">POST /api/cron — header <span className="text-text-primary">x-cron-secret</span>, every 1 min via cron-job.org</p>
+            <p className="mt-1 text-xs text-text-secondary">The same tick dispatches due jobs from <span className="font-semibold text-text-primary">Cron jobs</span>. Tick history lives under <span className="font-semibold text-text-primary">History</span>.</p>
+          </div>
+          <Link
+            href="/cron-jobs"
+            className="shrink-0 rounded-xl border border-border px-3 py-1.5 text-xs font-medium text-text-secondary hover:border-primary hover:text-text-primary"
+          >
+            Cron jobs →
+          </Link>
+        </div>
       </div>
 
       {/* jina key */}

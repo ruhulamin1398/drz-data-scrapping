@@ -9,7 +9,7 @@ export const REVALIDATE_TIMEOUT_MS = 30000;
 export type RevalidateResult = { ok: boolean; code: number; durationMs: number; reason?: string };
 
 const revalidateBase = () =>
-  (process.env.REVALIDATE_BASE_URL || "https://frontend-9028.doctorzonebd.com").replace(/\/+$/, "");
+  (process.env.REVALIDATE_BASE_URL || "https://www.doctorzonebd.com").replace(/\/+$/, "");
 
 // POST one page path ("/doctors/x"; origin stripped, query/fragment rejected).
 // Throws on network/timeout; resolves with the outcome otherwise. Success =

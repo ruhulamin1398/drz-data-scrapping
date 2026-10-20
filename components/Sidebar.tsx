@@ -74,6 +74,16 @@ const NAV = [
       </svg>
     ),
   },
+  {
+    href: "/cron-jobs",
+    label: "Cron jobs",
+    desc: "scheduled requests",
+    icon: (
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.8} className="h-5 w-5">
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 8v4l3 2M20.5 14A9 9 0 1 1 18 5.3M21 3v6h-6" />
+      </svg>
+    ),
+  },
 ];
 
 export default function Sidebar() {
