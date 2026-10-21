@@ -5,7 +5,9 @@
 import { Pool } from "pg";
 import { env } from "./env";
 
-export const REVALIDATE_TIMEOUT_MS = 30000;
+// Cold renders can take minutes on a busy frontend; give each revalidate call
+// up to 5 minutes (the visit route raises maxDuration to match).
+export const REVALIDATE_TIMEOUT_MS = 300000;
 
 export type RevalidateResult = { ok: boolean; code: number; durationMs: number; reason?: string };
 

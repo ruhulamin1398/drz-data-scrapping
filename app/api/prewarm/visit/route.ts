@@ -2,7 +2,10 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
 import { revalidateUrl } from "@/lib/prewarm";
 
-// POST /api/prewarm/visit { url } — single ISR revalidate call (30s timeout).
+// Allow the manual/retry path to wait for a slow cold render (REVALIDATE_TIMEOUT_MS).
+export const maxDuration = 300;
+
+// POST /api/prewarm/visit { url } — single ISR revalidate call (5 min timeout).
 // The frontend admin endpoint marks the page stale, cold-renders it and stamps
 // the sitemap store; the caller marks the queue row. warmed=true (<400) = ok.
 // Base URL comes from settings.revalidate_base_url (editable on /prewarm).
