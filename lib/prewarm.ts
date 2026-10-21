@@ -9,6 +9,18 @@ export const REVALIDATE_TIMEOUT_MS = 30000;
 
 export type RevalidateResult = { ok: boolean; code: number; durationMs: number; reason?: string };
 
+// Flatten undici's AggregateError/`cause` chain (e.g. ECONNRESET, ENETUNREACH,
+// certificate errors) so a bare "fetch failed" becomes actionable.
+function describeError(e: unknown): string {
+  if (!(e instanceof Error)) return String(e);
+  const any = e as Error & { code?: string; cause?: unknown; errors?: unknown[] };
+  const parts = [any.message];
+  if (any.code) parts.push(any.code);
+  if (Array.isArray(any.errors)) for (const x of any.errors) parts.push(describeError(x));
+  else if (any.cause) parts.push(describeError(any.cause));
+  return [...new Set(parts)].join(" | ");
+}
+
 type RevalidateResponse = {
   revalidated?: boolean;
   invalid?: string[];
@@ -65,7 +77,7 @@ export async function revalidateUrl(url: string, baseUrl: string, timeoutMs = RE
     return { ok, code: w?.status ?? res.status, durationMs: Date.now() - started, reason };
   } catch (e) {
     if ((e as Error)?.name === "AbortError") throw new Error(`revalidate timeout after ${timeoutMs}ms`);
-    throw e;
+    throw new Error(`revalidate request to ${base}/api/admin/revalidate-page failed: ${describeError(e)}`);
   } finally {
     clearTimeout(t);
   }
