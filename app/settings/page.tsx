@@ -109,7 +109,7 @@ export default function SettingsPage() {
         <label className="block rounded-2xl border border-border bg-surface p-4 text-sm shadow-sm">
           <span className="font-semibold text-text-primary">Concurrency (system)</span>
           <span className="mt-0.5 block text-xs text-text-secondary">Items processed at the same time, shared by both queues</span>
-          <input type="number" min={1} max={100} value={s.concurrency}
+          <input type="number" min={1} max={1000} value={s.concurrency}
             onChange={(e) => update({ concurrency: Number(e.target.value) })}
             className="mt-2 w-full rounded-xl border border-border bg-surface-alt px-3 py-2 text-text-primary outline-none focus:border-primary" />
         </label>
