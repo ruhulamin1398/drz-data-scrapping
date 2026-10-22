@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { queueCounts, queueStatusWhere } from "@/lib/queue-status";
 
 // GET /api/doctors/queue?status=..&specialty=..&city=..&limit=..&offset=.. — page of rows + unfiltered counts.
 export async function GET(req: NextRequest) {
@@ -13,7 +14,11 @@ export async function GET(req: NextRequest) {
     const pool = db();
     const conds: string[] = [];
     const vals: (string | number)[] = [];
-    if (status) { vals.push(status); conds.push(`status=$${vals.length}`); }
+    const statusFilter = queueStatusWhere(status, "status", "started_at", vals.length + 1);
+    if (statusFilter) {
+      conds.push(statusFilter.clause);
+      if (statusFilter.value !== undefined) vals.push(statusFilter.value);
+    }
     if (specialty) { vals.push(specialty); conds.push(`specialty_slug=$${vals.length}`); }
     if (city) { vals.push(city); conds.push(`city=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
@@ -28,9 +33,7 @@ export async function GET(req: NextRequest) {
     if (specialty) { cvals.push(specialty); cconds.push(`specialty_slug=$${cvals.length}`); }
     if (city) { cvals.push(city); cconds.push(`city=$${cvals.length}`); }
     const cwhere = cconds.length ? `WHERE ${cconds.join(" AND ")}` : "";
-    const counts = await pool.query(`SELECT status, COUNT(*) c FROM doctor_queue ${cwhere} GROUP BY status`, cvals);
-    const byStatus: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0 };
-    for (const r of counts.rows) byStatus[r.status] = Number(r.c);
+    const byStatus = await queueCounts(pool, "doctor_queue", cwhere, cvals);
     return NextResponse.json({ items: rows.rows, counts: byStatus });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
@@ -55,6 +58,7 @@ export async function PATCH(req: NextRequest) {
           WHEN $7 IS NOT NULL AND department_ids='{}' THEN $7 ELSE department_ids END,
         city=COALESCE($9,city),
         locked_at = CASE WHEN $2='processing' THEN NULL ELSE locked_at END,
+        started_at = CASE WHEN $2='processing' THEN now() ELSE NULL END,
         updated_at=now() WHERE source_url=$1`,
       [b.url, b.status, b.name ?? null, b.drxId ?? null, b.failReason ?? null, b.specialtySlug ?? null, b.departmentIds ?? null, b.forceDepartments === true, b.city ?? null]
     );
@@ -94,7 +98,7 @@ export async function POST(req: NextRequest) {
     const pool = db();
     const r = await pool.query(
       `UPDATE doctor_queue SET status='${processing ? "processing" : "pending"}',
-        fail_reason=NULL, locked_at=NULL, updated_at=now()
+        fail_reason=NULL, locked_at=NULL, started_at=NULL, updated_at=now()
        WHERE status = ANY($1)`,
       [statuses]
     );

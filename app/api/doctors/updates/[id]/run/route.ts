@@ -20,7 +20,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
     };
     if (q.type !== "photo" && q.type !== "experience") return NextResponse.json({ error: `unsupported type: ${q.type}` }, { status: 400 });
     if (!q.drx_id) return NextResponse.json({ error: "drxId required (push first via /doctors)" }, { status: 400 });
-    await pool.query(`UPDATE doctor_update_runs SET status='processing', locked_at=NULL, attempts=attempts+1, updated_at=now() WHERE id=$1`, [runId]);
+    await pool.query(`UPDATE doctor_update_runs SET status='processing', locked_at=NULL, started_at=now(), attempts=attempts+1, updated_at=now() WHERE id=$1`, [runId]);
     try {
       if (q.type === "experience") {
         const skipFlag = ((q.options ?? {}) as ExperienceOptions).skipIfExperienceSet !== false;
@@ -39,7 +39,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
         if (outcome.action === "skipped") {
           const note = `skipped: ${outcome.reason} | prev: ${outcome.prevValue || "none"} | skipIfExists=${skipFlag ? "on" : "off"}`;
           await pool.query(
-            `UPDATE doctor_update_runs SET status='skipped', result='skipped', fail_reason=$2, note=$3, finished_at=now(), updated_at=now() WHERE id=$1`,
+            `UPDATE doctor_update_runs SET status='skipped', result='skipped', fail_reason=$2, note=$3, started_at=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
             [runId, outcome.reason.slice(0, 300), note.slice(0, 1000)]
           );
           return NextResponse.json({ ok: true, result: "skipped", reason: outcome.reason });
@@ -47,7 +47,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
         await applyExperience(q.drx_id, outcome.newValue);
         const note = `experience ${outcome.prevValue || "none"} → ${outcome.newValue} years | skipIfExists=${skipFlag ? "on" : "off"}`;
         await pool.query(
-          `UPDATE doctor_update_runs SET status='success', result='updated', note=$2, fail_reason=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
+          `UPDATE doctor_update_runs SET status='success', result='updated', note=$2, fail_reason=NULL, started_at=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
           [runId, note.slice(0, 1000)]
         );
         return NextResponse.json({ ok: true, result: "updated" });
@@ -60,7 +60,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       if (outcome.action === "skipped") {
         const note = `skipped: ${outcome.reason} | prev: ${outcome.prevPhoto || "none"} | skipIfExists=${skipFlag ? "on" : "off"}`;
         await pool.query(
-          `UPDATE doctor_update_runs SET status='skipped', result='skipped', prev_photo=$2, fail_reason=$3, note=$4, finished_at=now(), updated_at=now() WHERE id=$1`,
+          `UPDATE doctor_update_runs SET status='skipped', result='skipped', prev_photo=$2, fail_reason=$3, note=$4, started_at=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
           [runId, outcome.prevPhoto || null, outcome.reason.slice(0, 300), note.slice(0, 1000)]
         );
         return NextResponse.json({ ok: true, result: "skipped", reason: outcome.reason });
@@ -68,7 +68,7 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       await applyPhoto(q.drx_id, outcome.newPhoto);
       const note = `photo ${outcome.prevPhoto || "none"} → ${outcome.newPhoto} | skipIfExists=${skipFlag ? "on" : "off"}`;
       await pool.query(
-        `UPDATE doctor_update_runs SET status='success', result='updated', prev_photo=$2, new_photo=$3, fail_reason=NULL, note=$4, finished_at=now(), updated_at=now() WHERE id=$1`,
+        `UPDATE doctor_update_runs SET status='success', result='updated', prev_photo=$2, new_photo=$3, fail_reason=NULL, note=$4, started_at=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
         [runId, outcome.prevPhoto || null, outcome.newPhoto, note.slice(0, 1000)]
       );
       return NextResponse.json({ ok: true, result: "updated" });
@@ -78,13 +78,13 @@ export async function POST(_req: NextRequest, ctx: { params: Promise<{ id: strin
       // failing, up to 5 attempts.
       if (/abort/i.test(msg) && (q.attempts ?? 0) < 5) {
         await pool.query(
-          `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, fail_reason=$2, finished_at=NULL, updated_at=now() WHERE id=$1`,
+          `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, started_at=NULL, fail_reason=$2, finished_at=NULL, updated_at=now() WHERE id=$1`,
           [runId, `retryable: ${msg}`.slice(0, 300)]
         );
         return NextResponse.json({ ok: true, result: "pending", reason: msg.slice(0, 300) });
       }
       await pool.query(
-        `UPDATE doctor_update_runs SET status='failed', result='failed', fail_reason=$2, finished_at=now(), updated_at=now() WHERE id=$1`,
+        `UPDATE doctor_update_runs SET status='failed', result='failed', fail_reason=$2, started_at=NULL, finished_at=now(), updated_at=now() WHERE id=$1`,
         [runId, msg.slice(0, 300)]
       );
       return NextResponse.json({ error: msg.slice(0, 300) }, { status: 502 });

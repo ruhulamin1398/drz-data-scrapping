@@ -8,6 +8,7 @@ import { applyPhoto, updatePhoto } from "./doctor-update/photo";
 import { applyExperience, updateExperience } from "./doctor-update/experience";
 import type { PhotoOptions, ExperienceOptions, UpdateRunRow } from "./doctor-update/types";
 import { revalidateUrl } from "./prewarm";
+import { queueCounts } from "./queue-status";
 
 export type QRow = {
   id: number; title: string; source_url: string;
@@ -60,10 +61,11 @@ export async function getPipelineStats(): Promise<PipelineStats> {
     worker_active: boolean; worker_heartbeat: string | null; heartbeat_at: string | null;
   } | undefined;
   const tally = async (table: string) => {
-    const out: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0, skipped: 0 };
-    const r = await pool.query(`SELECT status, COUNT(*) c FROM ${table} GROUP BY status`).catch(() => null);
-    for (const row of r?.rows ?? []) out[row.status] = Number(row.c);
-    return out;
+    try {
+      return await queueCounts(pool, table, "", [], ["skipped"]);
+    } catch {
+      return { pending: 0, processing: 0, in_progress: 0, success: 0, failed: 0, skipped: 0 };
+    }
   };
   const last = await pool.query(
     `SELECT status, COALESCE(succeeded,0) succeeded, COALESCE(failed,0) failed,
@@ -83,7 +85,7 @@ export async function getPipelineStats(): Promise<PipelineStats> {
     heartbeatAt: f?.heartbeat_at ?? null,
     facilities: await tally("facility_queue"), doctors: await tally("doctor_queue"),
     prewarm: await tally("prewarm_queue"),
-    updates: await tally("doctor_update_runs").catch(() => ({ pending: 0, processing: 0, success: 0, failed: 0, skipped: 0 })),
+    updates: await tally("doctor_update_runs").catch(() => ({ pending: 0, processing: 0, in_progress: 0, success: 0, failed: 0, skipped: 0 })),
     lastRun: lr ? {
       status: lr.status, succeeded: Number(lr.succeeded), failed: Number(lr.failed),
       claimed: Number(lr.claimed), finishedAt: lr.finished_at,
@@ -285,7 +287,7 @@ async function processUpdateRun(pool: Pool, q: UpdateRunRow): Promise<boolean> {
     // failing, up to 5 attempts — then it is a real failure.
     if (/abort/i.test(msg) && (q.attempts ?? 0) < 5) {
       await pool.query(
-        `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, fail_reason=$2, finished_at=NULL, updated_at=now() WHERE id=$1`,
+        `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, started_at=NULL, fail_reason=$2, finished_at=NULL, updated_at=now() WHERE id=$1`,
         [q.id, `retryable: ${msg}`.slice(0, 300)]
       ).catch(() => {});
       return false;
@@ -414,6 +416,14 @@ async function processSingleItem(pool: Pool, q: QRow): Promise<boolean> {
 // The background worker: eats server-claimed rows (locked_at NOT NULL — browser
 // retries own theirs) until none remain, disabled, or the time budget ends.
 // Then it stops and releases ownership; the next tick starts it again if needed.
+function markQueueStarted(pool: Pool, table: string, ids: number[], started: boolean) {
+  if (!ids.length) return Promise.resolve();
+  return pool.query(
+    `UPDATE ${table} SET started_at=${started ? "now()" : "NULL"} WHERE id = ANY($1)`,
+    [ids]
+  );
+}
+
 async function workerLoop(concurrency: number): Promise<{ succeeded: number; failed: number }> {
   const pool = db();
   let succeeded = 0, failed = 0;
@@ -468,12 +478,30 @@ async function workerLoop(concurrency: number): Promise<{ succeeded: number; fai
       const prows = pbatch.rows as PrewarmRow[];
       const urows = ubatch.rows as UpdateRunRow[];
       if (!rows.length && !drows.length && !prows.length && !urows.length) break;
-      const results = await Promise.all([
-        ...rows.map((q) => processSingleItem(pool, q)),
-        ...drows.map((q) => processDoctorItem(pool, q)),
-        ...prows.map((q) => processPrewarmItem(pool, q, s.revalidate_base_url)),
-        ...urows.map((q) => processUpdateRun(pool, q)),
-      ]);
+      // Mark exactly the batch this loop is running. Rows still in processing
+      // with started_at NULL are claimed but waiting for a worker slot.
+      await Promise.all([
+        markQueueStarted(pool, "facility_queue", rows.map((q) => q.id), true),
+        markQueueStarted(pool, "doctor_queue", drows.map((q) => q.id), true),
+        markQueueStarted(pool, "prewarm_queue", prows.map((q) => q.id), true),
+        markQueueStarted(pool, "doctor_update_runs", urows.map((q) => q.id), true),
+      ]).catch(() => {});
+      let results: boolean[] = [];
+      try {
+        results = await Promise.all([
+          ...rows.map((q) => processSingleItem(pool, q)),
+          ...drows.map((q) => processDoctorItem(pool, q)),
+          ...prows.map((q) => processPrewarmItem(pool, q, s.revalidate_base_url)),
+          ...urows.map((q) => processUpdateRun(pool, q)),
+        ]);
+      } finally {
+        await Promise.all([
+          markQueueStarted(pool, "facility_queue", rows.map((q) => q.id), false),
+          markQueueStarted(pool, "doctor_queue", drows.map((q) => q.id), false),
+          markQueueStarted(pool, "prewarm_queue", prows.map((q) => q.id), false),
+          markQueueStarted(pool, "doctor_update_runs", urows.map((q) => q.id), false),
+        ]).catch(() => {});
+      }
       const ok = results.filter(Boolean).length;
       succeeded += ok;
       failed += results.length - ok;
@@ -520,22 +548,22 @@ export async function runProcessor(): Promise<TickResult> {
   // Reconcile: rows stuck in processing (dead run, closed tab, old rows without
   // locked_at) go back to pending. Browser-owned rows (locked_at NULL) only when stale.
   await pool.query(
-    `UPDATE facility_queue SET status='pending', locked_at=NULL, updated_at=now()
+    `UPDATE facility_queue SET status='pending', locked_at=NULL, started_at=NULL, updated_at=now()
      WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
         OR locked_at < now() - INTERVAL '10 minutes')`
   ).catch(() => {});
   await pool.query(
-    `UPDATE doctor_queue SET status='pending', locked_at=NULL, updated_at=now()
+    `UPDATE doctor_queue SET status='pending', locked_at=NULL, started_at=NULL, updated_at=now()
      WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
         OR locked_at < now() - INTERVAL '10 minutes')`
   ).catch(() => {});
   await pool.query(
-    `UPDATE prewarm_queue SET status='pending', locked_at=NULL, updated_at=now()
+    `UPDATE prewarm_queue SET status='pending', locked_at=NULL, started_at=NULL, updated_at=now()
      WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
         OR locked_at < now() - INTERVAL '10 minutes')`
   ).catch(() => {});
   await pool.query(
-    `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, updated_at=now()
+    `UPDATE doctor_update_runs SET status='pending', locked_at=NULL, started_at=NULL, updated_at=now()
      WHERE status='processing' AND (locked_at IS NULL AND updated_at < now() - INTERVAL '10 minutes'
         OR locked_at < now() - INTERVAL '10 minutes')`
   ).catch(() => {});

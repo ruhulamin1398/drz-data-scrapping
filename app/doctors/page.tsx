@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
+import QueueTabs, { queueTotal, statusLabel, type QueueCounts, type QueueFilter } from "@/components/QueueTabs";
 
 type DRow = {
   id: number; source_url: string; name: string | null;
@@ -15,8 +16,8 @@ const SPECIALTIES = ["anesthesiologist","best-child-psychiatrist","breast-surgeo
 
 export default function Doctors() {
   const [rows, setRows] = useState<DRow[]>([]);
-  const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
-  const [filter, setFilter] = useState<"all" | "pending" | "processing" | "success" | "failed">("all");
+  const [counts, setCounts] = useState<QueueCounts>({ pending: 0, processing: 0, in_progress: 0, success: 0, failed: 0 });
+  const [filter, setFilter] = useState<QueueFilter>("all");
   const [specialty, setSpecialty] = useState("");
   const [cities, setCities] = useState<{ city: string; count: number }[]>([]);
   const [city, setCity] = useState("");
@@ -36,9 +37,7 @@ export default function Doctors() {
   const busyRetry = busy || active.length > 0;
   const queueRunning = settings.enabled && settings.doctors_enabled;
 
-  const tabCount = filter === "all"
-    ? counts.pending + counts.processing + counts.success + counts.failed
-    : counts[filter];
+  const tabCount = filter === "all" ? queueTotal(counts) : (counts[filter] ?? 0);
   const totalPages = perPage === "all" ? 1 : Math.max(1, Math.ceil(tabCount / perPage));
 
   async function load(sp = specialty, f = filter, p = page, per = perPage, c = city) {
@@ -271,11 +270,11 @@ export default function Doctors() {
         </QueueSwitch>
       </div>
 
-      <div className="mt-4 grid grid-cols-4 gap-2 text-center">
-        {(["pending", "processing", "success", "failed"] as const).map((s) => (
+      <div className="mt-4 grid grid-cols-5 gap-2 text-center">
+        {(["pending", "processing", "in_progress", "success", "failed"] as const).map((s) => (
           <div key={s} className="rounded-xl border border-border bg-surface px-2 py-2.5">
-            <p className="text-lg font-bold text-text-primary">{counts[s]}</p>
-            <p className="text-[11px] capitalize text-text-secondary">{s}</p>
+            <p className="text-lg font-bold text-text-primary">{counts[s] ?? 0}</p>
+            <p className="text-[11px] capitalize text-text-secondary">{statusLabel(s)}</p>
           </div>
         ))}
       </div>
@@ -297,7 +296,7 @@ export default function Doctors() {
             className="flex-1 rounded-xl border border-border bg-surface-alt px-3 py-2.5 text-sm text-text-primary outline-none focus:border-primary"
             value={specialty} onChange={(e) => { setSpecialty(e.target.value); setPage(1); load(e.target.value, filter, 1, perPage); }}
           >
-            <option value="">All specialties ({counts.pending + counts.processing + counts.success + counts.failed})</option>
+            <option value="">All specialties ({queueTotal(counts)})</option>
             {SPECIALTIES.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
@@ -310,17 +309,8 @@ export default function Doctors() {
         </div>
       </div>
 
-      <div className="mt-4 flex gap-1 rounded-xl bg-surface-alt p-1 text-sm">
-        {(["all", "pending", "processing", "success", "failed"] as const).map((f) => {
-          const n = f === "all" ? counts.pending + counts.processing + counts.success + counts.failed : counts[f];
-          return (
-            <button key={f} onClick={() => { setFilter(f); setPage(1); load(specialty, f, 1, perPage); }}
-              className={`flex-1 rounded-lg px-3 py-2 font-medium capitalize transition ${
-                filter === f ? "bg-surface text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
-              }`}>{f} ({n})</button>
-          );
-        })}
-      </div>
+      <QueueTabs counts={counts} filter={filter}
+        onChange={(f) => { setFilter(f); setPage(1); load(specialty, f, 1, perPage); }} />
 
       <div className="mt-3 space-y-2">
         {rows.map((q) => (

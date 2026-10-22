@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { queueCounts, queueStatusWhere } from "@/lib/queue-status";
 
 // GET /api/doctors/updates?status=..&type=photo&limit=..&offset=.. — runs + counts.
 export async function GET(req: NextRequest) {
@@ -12,7 +13,11 @@ export async function GET(req: NextRequest) {
     const pool = db();
     const conds: string[] = [];
     const vals: (string | number)[] = [];
-    if (status) { vals.push(status); conds.push(`r.status=$${vals.length}`); }
+    const statusFilter = queueStatusWhere(status, "r.status", "r.started_at", vals.length + 1);
+    if (statusFilter) {
+      conds.push(statusFilter.clause);
+      if (statusFilter.value !== undefined) vals.push(statusFilter.value);
+    }
     if (type) { vals.push(type); conds.push(`r.type=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
     let sql = `SELECT r.*, q.name AS doctor_name FROM doctor_update_runs r
@@ -28,12 +33,13 @@ export async function GET(req: NextRequest) {
       }
       throw e;
     });
-    const counts = await pool.query(
-      `SELECT status, COUNT(*) c FROM doctor_update_runs ${type ? `WHERE type=$1` : ""} GROUP BY status`,
-      type ? [type] : []
-    ).catch(() => ({ rows: [] as { status: string; c: string }[] }));
-    const byStatus: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0, skipped: 0 };
-    for (const r of counts.rows) byStatus[r.status] = Number(r.c);
+    const byStatus = await queueCounts(
+      pool,
+      "doctor_update_runs",
+      type ? `WHERE type=$1` : "",
+      type ? [type] : [],
+      ["skipped"]
+    ).catch(() => ({ pending: 0, processing: 0, in_progress: 0, success: 0, failed: 0, skipped: 0 }));
     return NextResponse.json({ items: rows.rows, counts: byStatus });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });

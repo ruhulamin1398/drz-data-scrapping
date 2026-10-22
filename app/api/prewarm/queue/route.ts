@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { queueCounts, queueStatusWhere } from "@/lib/queue-status";
 
 // GET /api/prewarm/queue?status=..&limit=..&offset=.. — page of rows + counts.
 export async function GET(req: NextRequest) {
@@ -11,7 +12,11 @@ export async function GET(req: NextRequest) {
     const pool = db();
     const conds: string[] = [];
     const vals: (string | number)[] = [];
-    if (status) { vals.push(status); conds.push(`status=$${vals.length}`); }
+    const statusFilter = queueStatusWhere(status, "status", "started_at", vals.length + 1);
+    if (statusFilter) {
+      conds.push(statusFilter.clause);
+      if (statusFilter.value !== undefined) vals.push(statusFilter.value);
+    }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
     let sql = `SELECT * FROM prewarm_queue ${where} ORDER BY updated_at DESC, id DESC`;
     if (!all) {
@@ -19,9 +24,7 @@ export async function GET(req: NextRequest) {
       sql += ` LIMIT $${vals.length - 1} OFFSET $${vals.length}`;
     }
     const rows = await pool.query(sql, vals);
-    const counts = await pool.query(`SELECT status, COUNT(*) c FROM prewarm_queue GROUP BY status`);
-    const byStatus: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0 };
-    for (const r of counts.rows) byStatus[r.status] = Number(r.c);
+    const byStatus = await queueCounts(pool, "prewarm_queue");
     return NextResponse.json({ items: rows.rows, counts: byStatus });
   } catch (e: unknown) {
     return NextResponse.json({ error: e instanceof Error ? e.message : String(e) }, { status: 500 });
@@ -40,6 +43,7 @@ export async function PATCH(req: NextRequest) {
         http_code=COALESCE($3,http_code), duration_ms=COALESCE($4,duration_ms),
         fail_reason=$5,
         locked_at = CASE WHEN $2='processing' THEN NULL ELSE locked_at END,
+        started_at = CASE WHEN $2='processing' THEN now() ELSE NULL END,
         updated_at=now() WHERE source_url=$1`,
       [b.url, b.status, b.httpCode ?? null, b.durationMs ?? null, b.failReason ?? null]
     );
@@ -60,7 +64,7 @@ export async function POST(req: NextRequest) {
     if (b.action === "retry") {
       const r = await pool.query(
         `UPDATE prewarm_queue SET status='processing',
-          fail_reason=NULL, locked_at=NULL, updated_at=now()
+          fail_reason=NULL, locked_at=NULL, started_at=NULL, updated_at=now()
          WHERE status='failed'`
       );
       return NextResponse.json({ reset: r.rowCount ?? 0 });
@@ -68,7 +72,7 @@ export async function POST(req: NextRequest) {
     if (b.action === "to-pending") {
       const r = await pool.query(
         `UPDATE prewarm_queue SET status='pending',
-          fail_reason=NULL, locked_at=NULL, updated_at=now()
+          fail_reason=NULL, locked_at=NULL, started_at=NULL, updated_at=now()
          WHERE status='failed'`
       );
       return NextResponse.json({ reset: r.rowCount ?? 0 });

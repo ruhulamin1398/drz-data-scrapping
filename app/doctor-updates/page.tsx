@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
+import QueueTabs, { statusLabel, type QueueCounts, type QueueFilter } from "@/components/QueueTabs";
+
+const UPDATE_STATUSES = ["pending", "processing", "in_progress", "success", "skipped", "failed"] as const;
 
 type Run = {
   id: number; doctor_queue_id: number; doctor_name: string | null;
@@ -18,8 +21,8 @@ type Cand = { id: number; name: string | null; source_url: string; drx_id: strin
 
 export default function DoctorUpdates() {
   const [runs, setRuns] = useState<Run[]>([]);
-  const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0, skipped: 0 });
-  const [filter, setFilter] = useState<"all" | "pending" | "processing" | "success" | "failed" | "skipped">("all");
+  const [counts, setCounts] = useState<QueueCounts>({ pending: 0, processing: 0, in_progress: 0, success: 0, failed: 0, skipped: 0 });
+  const [filter, setFilter] = useState<QueueFilter>("all");
   const [cands, setCands] = useState<Cand[]>([]);
   const [sel, setSel] = useState<number[]>([]);
   const [utility, setUtility] = useState<"photo" | "experience">("photo");
@@ -231,23 +234,17 @@ export default function DoctorUpdates() {
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-5 gap-2 text-center">
-        {(["pending", "processing", "success", "skipped", "failed"] as const).map((s) => (
+      <div className="mt-4 grid grid-cols-6 gap-2 text-center">
+        {UPDATE_STATUSES.map((s) => (
           <div key={s} className="rounded-xl border border-border bg-surface px-2 py-2.5">
-            <p className="text-lg font-bold text-text-primary">{counts[s]}</p>
-            <p className="text-[11px] capitalize text-text-secondary">{s}</p>
+            <p className="text-lg font-bold text-text-primary">{counts[s] ?? 0}</p>
+            <p className="text-[11px] capitalize text-text-secondary">{statusLabel(s)}</p>
           </div>
         ))}
       </div>
 
-      <div className="mt-4 flex gap-1 rounded-xl bg-surface-alt p-1 text-sm">
-        {(["all", "pending", "processing", "success", "skipped", "failed"] as const).map((f) => (
-          <button key={f} onClick={() => { setFilter(f); loadRuns(f); }}
-            className={`flex-1 rounded-lg px-3 py-2 font-medium capitalize ${filter === f ? "bg-surface text-text-primary shadow-sm" : "text-text-secondary"}`}>
-            {f}
-          </button>
-        ))}
-      </div>
+      <QueueTabs counts={counts} filter={filter} statuses={UPDATE_STATUSES}
+        onChange={(f) => { setFilter(f); loadRuns(f); }} />
 
       <div className="mt-3 space-y-2">
         {runs.map((r) => (

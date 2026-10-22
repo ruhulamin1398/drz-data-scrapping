@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import QueueSwitch, { TasksPerTickInput } from "@/components/QueueSwitch";
+import QueueTabs, { queueTotal, statusLabel, type QueueCounts, type QueueFilter } from "@/components/QueueTabs";
 
 type PRow = {
   id: number; source_url: string;
@@ -12,8 +13,8 @@ type PRow = {
 
 export default function Prewarm() {
   const [rows, setRows] = useState<PRow[]>([]);
-  const [counts, setCounts] = useState({ pending: 0, processing: 0, success: 0, failed: 0 });
-  const [filter, setFilter] = useState<"all" | "pending" | "processing" | "success" | "failed">("all");
+  const [counts, setCounts] = useState<QueueCounts>({ pending: 0, processing: 0, in_progress: 0, success: 0, failed: 0 });
+  const [filter, setFilter] = useState<QueueFilter>("all");
   const [page, setPage] = useState(1);
   const [perPage, setPerPage] = useState<number | "all">(20);
   const [busy, setBusy] = useState(false);
@@ -32,9 +33,7 @@ export default function Prewarm() {
   const busyRetry = busy || active.length > 0;
   const queueRunning = settings.enabled && settings.prewarm_enabled;
 
-  const tabCount = filter === "all"
-    ? counts.pending + counts.processing + counts.success + counts.failed
-    : counts[filter];
+  const tabCount = filter === "all" ? queueTotal(counts) : (counts[filter] ?? 0);
   const totalPages = perPage === "all" ? 1 : Math.max(1, Math.ceil(tabCount / perPage));
 
   async function load(f = filter, p = page, per = perPage) {
@@ -323,26 +322,17 @@ export default function Prewarm() {
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-4 gap-2 text-center">
-        {(["pending", "processing", "success", "failed"] as const).map((s) => (
+      <div className="mt-4 grid grid-cols-5 gap-2 text-center">
+        {(["pending", "processing", "in_progress", "success", "failed"] as const).map((s) => (
           <div key={s} className="rounded-xl border border-border bg-surface px-2 py-2.5">
-            <p className="text-lg font-bold text-text-primary">{counts[s]}</p>
-            <p className="text-[11px] capitalize text-text-secondary">{s}</p>
+            <p className="text-lg font-bold text-text-primary">{counts[s] ?? 0}</p>
+            <p className="text-[11px] capitalize text-text-secondary">{statusLabel(s)}</p>
           </div>
         ))}
       </div>
 
-      <div className="mt-4 flex gap-1 rounded-xl bg-surface-alt p-1 text-sm">
-        {(["all", "pending", "processing", "success", "failed"] as const).map((f) => {
-          const n = f === "all" ? counts.pending + counts.processing + counts.success + counts.failed : counts[f];
-          return (
-            <button key={f} onClick={() => { setFilter(f); setPage(1); load(f, 1, perPage); }}
-              className={`flex-1 rounded-lg px-3 py-2 font-medium capitalize transition ${
-                filter === f ? "bg-surface text-text-primary shadow-sm" : "text-text-secondary hover:text-text-primary"
-              }`}>{f} ({n})</button>
-          );
-        })}
-      </div>
+      <QueueTabs counts={counts} filter={filter}
+        onChange={(f) => { setFilter(f); setPage(1); load(f, 1, perPage); }} />
 
       <div className="mt-3 space-y-2">
         {rows.map((q) => (

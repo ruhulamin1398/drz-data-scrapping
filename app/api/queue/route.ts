@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/lib/db";
+import { queueCounts, queueStatusWhere } from "@/lib/queue-status";
 
 // GET /api/queue?status=..&group=..&limit=..&offset=.. — page of rows + unfiltered counts.
 // limit=all returns everything (no LIMIT/OFFSET).
@@ -13,7 +14,11 @@ export async function GET(req: NextRequest) {
     const pool = db();
     const conds: string[] = [];
     const vals: (string | number)[] = [];
-    if (status) { vals.push(status); conds.push(`status=$${vals.length}`); }
+    const statusFilter = queueStatusWhere(status, "status", "started_at", vals.length + 1);
+    if (statusFilter) {
+      conds.push(statusFilter.clause);
+      if (statusFilter.value !== undefined) vals.push(statusFilter.value);
+    }
     if (group) { vals.push(group); conds.push(`group_key=$${vals.length}`); }
     const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
     let sql = `SELECT * FROM facility_queue ${where} ORDER BY updated_at DESC, id DESC`;
@@ -25,9 +30,7 @@ export async function GET(req: NextRequest) {
     const cvals: string[] = [];
     const cwhere = group ? `WHERE group_key=$1` : "";
     if (group) cvals.push(group);
-    const counts = await pool.query(`SELECT status, COUNT(*) c FROM facility_queue ${cwhere} GROUP BY status`, cvals);
-    const byStatus: Record<string, number> = { pending: 0, processing: 0, success: 0, failed: 0 };
-    for (const r of counts.rows) byStatus[r.status] = Number(r.c);
+    const byStatus = await queueCounts(pool, "facility_queue", cwhere, cvals);
     // DB-backed per-group totals + grand total for the group dropdown.
     // (File-based group sizes go stale when rows are added directly to the DB.)
     const byGroup = await pool.query(`SELECT group_key, COUNT(*) c FROM facility_queue GROUP BY group_key`);
@@ -60,6 +63,7 @@ export async function PATCH(req: NextRequest) {
         type_id=COALESCE($9,type_id), drx_id=COALESCE($10,drx_id),
         fail_reason=$11, full_content = full_content OR $12,
         locked_at = CASE WHEN $2='processing' THEN NULL ELSE locked_at END,
+        started_at = CASE WHEN $2='processing' THEN now() ELSE NULL END,
         updated_at=now() WHERE source_url=$1`,
       [b.url, b.status, b.name ?? null, b.fullAddress ?? null,
        b.phones ?? null, b.extraInformation ?? null,
@@ -109,7 +113,7 @@ export async function POST(req: NextRequest) {
     const r = await pool.query(
       `UPDATE facility_queue SET status='${processing ? "processing" : "pending"}',
         fail_reason=NULL, full_content = full_content OR $2,
-        locked_at=${processing ? "now()" : "NULL"}, updated_at=now()
+        locked_at=${processing ? "now()" : "NULL"}, started_at=NULL, updated_at=now()
        WHERE status = ANY($1)${b.group ? ` AND group_key=$${params.length}` : ""}`,
       params
     );
